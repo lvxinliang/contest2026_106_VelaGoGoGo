@@ -1,0 +1,159 @@
+menu "USB Drivers"
+
+config USB
+	bool "enable USB Drivers"
+	select DRIVERS_USB
+	default n
+
+config DRIVERS_USB
+	bool
+	default n
+
+config USB_UDC
+	bool
+	default n
+
+config USB_UHC
+	bool
+	default n
+
+config HAL_TEST_USB
+	bool
+	default n
+
+if USB
+
+menuconfig USB_DEVICE
+	bool "USB DEVICE"
+	select USB_UDC
+	default n
+
+if USB_DEVICE
+config HAL_TEST_UDC
+	bool
+	select HAL_TEST_USB
+	default n
+
+config UDC_USE_DMA
+	bool "enable dma for udc driver"
+	default n
+
+config USB_GADGET
+	bool "Support usb gadget driver"
+	select HAL_TEST_UDC
+	default n
+
+if USB_GADGET
+choice
+	prompt "usb gadget driver"
+	default DRIVERS_USB_GADGET_ADB
+
+	config DRIVERS_USB_GADGET_ADB
+		bool "adb gadget driver"
+		#select COMPONENTS_USB_GADGET_ADBD
+
+endchoice
+endif # if USB_GADGET
+endif # if USB_DEVICE
+
+menuconfig USB_HOST
+	bool "USB HOST"
+	select USB_UHC
+	default n
+
+if USB_HOST
+config SUNXI_USBEHCI
+	bool "USB EHCI"
+	default n
+	select USBHOST_HAVE_ASYNCH if USBHOST
+	select USBHOST_ASYNCH
+
+if SUNXI_USBEHCI && USBHOST
+	menu "USB host controller driver (HCD) options"
+
+	choice
+		prompt "usbhost driver binds with controller which controller had been selected"
+		default SELECT_SUNXI_UBSC1
+		config SELECT_SUNXI_UBSC0
+			bool "select sunxi usb contoller 0"
+		config SELECT_SUNXI_UBSC1
+			bool "select sunxi usb contoller 1"
+	endchoice
+
+	config SUNXI_EHCI_NQHS
+		int "Number of Queue Head (QH) structures"
+		default 4
+		---help---
+			Configurable number of Queue Head (QH) structures.  The default is
+			one per Root hub port plus one for EP0 (4).
+
+	config SUNXI_EHCI_NQTDS
+		int "Number of Queue Element Transfer Descriptor (qTDs)"
+		default 6
+		---help---
+			Configurable number of Queue Element Transfer Descriptor (qTDs).
+			The default is one per root hub plus three from EP0 (6).
+
+	config SUNXI_EHCI_BUFSIZE
+		int "Size of one request/descriptor buffer"
+		default 128
+		---help---
+			The size of one request/descriptor buffer in bytes.  The TD buffe
+			size must be an even number of 32-bit words and must be large enough
+			to hangle the largest transfer via a SETUP request.
+
+	config SUNXI_EHCI_PREALLOCATE
+		bool "Preallocate descriptor pool"
+		default y
+		---help---
+			Select this option to pre-allocate EHCI queue and descriptor
+			structure pools in .bss.  Otherwise, these pools will be
+			dynamically allocated using kmm_memalign().
+
+	config SUNXI_EHCI_REGDEBUG
+		bool "Register level debug"
+		depends on DEBUG_USB_INFO
+		default n
+		---help---
+			Output detailed register-level USB ehci debug information.  Requires
+			also CONFIG_DEBUG_USB_INFO.
+
+	config SUNXI_USBHOST_DEFPRIO
+		int "usbhost ehci waiter task prio"
+		default 50
+		---help---
+			usbhost ehci waiter task prio
+
+	config SUNXI_USBHOST_STACKSIZE
+		int "size of usbhost ehci waiter task stack"
+		default 8120
+		---help---
+			size of usbhost ehci waiter task stack
+
+	config SUNXI_USBHOST_VBUS_GPIO
+		string "USB host VBUS enable GPIO"
+		default "PD18"
+		---help---
+			GPIO used to enable USB host VBUS, in the form PB0 to PG31.
+
+	config SUNXI_USBHOST_LOGDEBUG
+		bool "sunxi usbhost controller driver debug log config"
+		default n
+		---help---
+			support and config output-debuglog for sunxi usbhost controller driver
+		if SUNXI_USBHOST_LOGDEBUG
+			config SUNXI_USBHOST_LOGDEBUG_DEBUG
+				bool "output usbhost controller driver debug-level log"
+				default n
+			config SUNXI_USBHOST_LOGDEBUG_INFO
+				bool "output usbhost controller driver info-level log"
+				default n
+			config SUNXI_USBHOST_LOGDEBUG_WARN
+				bool "output usbhost controller driver warn-level log"
+				default n
+		endif # if SUNXI_USBHOST_LOGDEBUG
+	endmenu # "USB host controller driver (HCD) options"
+endif # if SUNXI_USBEHCI && USBHOST
+endif # if USB_HOST
+endif # if USB
+endmenu

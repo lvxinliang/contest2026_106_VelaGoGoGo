@@ -33,9 +33,27 @@ CA_ROMFS_RAW="etc/ssl/certs/doubao-ca.pem"
 TEAM_CA="$TEAM_REPO/app/home_scense/doubao/certs/doubao-ca.pem"
 VENDOR_CA="$WORKSPACE/vendor/allwinnertech/boards/r528/r528s3-gemini-s1/src/$CA_ROMFS_RAW"
 
+# Team source overlay: files kept in this repo that must be copied over the
+# public tree (nuttx / apps / vendor) before building. Keeps the public repos
+# free of committed changes — our sources live here and are applied at build.
+OVERLAY_DIR="$TEAM_REPO/board/contest_board/overlay"
+
 export PATH="$WORKSPACE/prebuilts/build-tools/linux-x86_64/bin:$PATH"
 
 die() { echo "ERROR: $*" >&2; exit 1; }
+
+apply_overlay() {
+    # Copy every file under overlay/ to the same path in the openvela
+    # workspace (overwriting modified files, creating new ones). Idempotent.
+    [ -d "$OVERLAY_DIR" ] || return 0
+    local count=0
+    while IFS= read -r rel; do
+        mkdir -p "$WORKSPACE/$(dirname "$rel")"
+        cp -f "$OVERLAY_DIR/$rel" "$WORKSPACE/$rel"
+        count=$((count + 1))
+    done < <(cd "$OVERLAY_DIR" && find . -type f -printf '%P\n')
+    echo "  [applied team overlay: $count files]"
+}
 
 refresh_doubao_objects() {
     # __has_include("doubao_secret.h") is not reliably represented in old
@@ -60,6 +78,9 @@ restore_vendor() {
 
 do_full_build() {
     echo "=== Full build ==="
+
+    # Apply team source overlay (USB host / UVC / detection) to the public tree.
+    apply_overlay
 
     # Apply team rcS.nsh + sys_partition.fex (temporary — restored after build)
     if [ -f "$TEAM_RCS" ]; then
@@ -97,7 +118,7 @@ do_full_build() {
 
     # Build
     cd "$WORKSPACE"
-    ./build.sh "$BOARD_CONFIG" -j8 || die "full build failed"
+    ./build.sh "$BOARD_CONFIG" -j32 || die "full build failed"
 
     # Restore vendor immediately
     restore_vendor
@@ -106,6 +127,9 @@ do_full_build() {
 
 do_incremental_build() {
     echo "=== Incremental build ==="
+
+    # Keep the public tree in sync with our overlay sources before rebuilding.
+    apply_overlay
     cd "$WORKSPACE"
     # envsetup.sh references NUTTX_DIR_NAME (must be set for -u mode)
     export NUTTX_DIR_NAME="${NUTTX_DIR_NAME:-nuttx}"
