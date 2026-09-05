@@ -114,6 +114,20 @@ Concatenation, Logistic, Quantize, Dequantize). If `AllocateTensors()` or
 `Invoke()` reports a missing builtin opcode, add the matching `AddXxx()`
 call — the error message names the opcode.
 
+## Camera mount orientation (important)
+
+BlazeFace only detects **upright** faces. If your camera module is mounted
+rotated (very common — the person_detection classifier tolerates any
+orientation and hides this), faces arrive lying on their side and BlazeFace
+won't fire until the image is rotated back to upright.
+
+`FACE_ROTATE` (top of `face_detection_main.cc`, values `0/90/180/270` degrees
+clockwise) rotates **only the model input**; the LCD preview stays in the
+native orientation and detected boxes/keypoints are rotated back onto it.
+Default is `270` (verified on the r528s3-gemini-s1 board). On a different
+board/mount, try `90` / `270` / `180` / `0`, recompile the app (no defconfig
+change needed), and keep the value that detects upright faces.
+
 ## Notes / known approximations
 
 - 320x240 is squished into 128x128 (independent x/y scaling), matching

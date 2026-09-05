@@ -86,6 +86,24 @@
 #define ROLL_THRESH   0.40f  /* |eyeL.y - eyeR.y| / eyeDist */
 #define YAW_THRESH    0.35f  /* |nose.x - eyeMid.x| / eyeDist */
 
+/* Camera-mount rotation compensation.
+ *
+ * BlazeFace only detects UPRIGHT faces, whereas the person_detection
+ * classifier tolerates any orientation.  On boards whose camera module is
+ * physically mounted rotated (very common), the captured frame has faces
+ * lying on their side, so BlazeFace fails until the image is rotated back
+ * to upright.  This rotates ONLY the model input (the LCD preview stays in
+ * the native orientation); detected boxes/keypoints are rotated back for
+ * the overlay.  Try 90 / 270 first (single 90-degree mount); pick the one
+ * that detects faces without physically turning the camera.
+ *
+ * Values: 0, 90, 180, 270 (degrees clockwise applied to the model input).
+ */
+
+#ifndef FACE_ROTATE
+#  define FACE_ROTATE 270
+#endif
+
 /* Keypoint indices in the BlazeFace output (left/right labels are only
  * a convention; the frontal test below is symmetric so it does not matter
  * which physical eye is index 0 vs 1).
@@ -217,14 +235,29 @@ static int mjpeg_output(JDEC *jd, void *bitmap, JRECT *rect)
           g_rgbbuf[y * cpw + x] =
             ((r & 0xf8) << 8) | ((g & 0xfc) << 3) | (b >> 3);
 
-          /* 128x128 RGB FLOAT32 for inference */
+          /* 128x128 RGB FLOAT32 for inference, rotated to upright per
+           * FACE_ROTATE so BlazeFace sees an upright face.
+           */
 
           if (g_inf_rgb && g_inf_srcw > 0 && g_inf_srch > 0)
             {
+#if FACE_ROTATE == 90
+              int dx = (int)((g_inf_srch - 1 - y) * IN_W / g_inf_srch);
+              int dy = (int)(x * IN_H / g_inf_srcw);
+#elif FACE_ROTATE == 180
+              int dx = (int)((g_inf_srcw - 1 - x) * IN_W / g_inf_srcw);
+              int dy = (int)((g_inf_srch - 1 - y) * IN_H / g_inf_srch);
+#elif FACE_ROTATE == 270
+              int dx = (int)(y * IN_W / g_inf_srch);
+              int dy = (int)((g_inf_srcw - 1 - x) * IN_H / g_inf_srcw);
+#else
               int dx = (int)(x * IN_W / g_inf_srcw);
               int dy = (int)(y * IN_H / g_inf_srch);
+#endif
               if (dx >= IN_W) dx = IN_W - 1;
               if (dy >= IN_H) dy = IN_H - 1;
+              if (dx < 0) dx = 0;
+              if (dy < 0) dy = 0;
               float *p = &g_inf_rgb[(dy * IN_W + dx) * IN_CH];
               p[0] = normalise_u8(r);
               p[1] = normalise_u8(g);
@@ -584,6 +617,24 @@ static void fb_blit(uint32_t w, uint32_t h)
  * Overlay detections on the RGB565 preview
  ****************************************************************************/
 
+/* Map a model-frame normalised coord (upright) back to the preview frame
+ * (native camera orientation) — inverse of the FACE_ROTATE applied to the
+ * model input, so boxes/keypoints land on the correct spot of the preview.
+ */
+
+static inline void model_to_preview(float mx, float my, float *px, float *py)
+{
+#if FACE_ROTATE == 90
+  *px = my;          *py = 1.0f - mx;
+#elif FACE_ROTATE == 180
+  *px = 1.0f - mx;   *py = 1.0f - my;
+#elif FACE_ROTATE == 270
+  *px = 1.0f - my;   *py = mx;
+#else
+  *px = mx;          *py = my;
+#endif
+}
+
 static void overlay_faces(int ndet, int any_frontal)
 {
   uint16_t bg = any_frontal ? COL_GREEN : COL_RED;
@@ -596,18 +647,28 @@ static void overlay_faces(int ndet, int any_frontal)
   for (int i = 0; i < ndet; i++)
     {
       detection_s *d = &g_det[i];
-      int x0 = (int)(d->xmin * TEST_WIDTH);
-      int y0 = (int)(d->ymin * TEST_HEIGHT);
-      int x1 = (int)(d->xmax * TEST_WIDTH);
-      int y1 = (int)(d->ymax * TEST_HEIGHT);
+
+      /* Transform the two opposite corners back to preview space; a
+       * multiple-of-90 rotation keeps the box axis-aligned, so min/max of
+       * the mapped corners recovers it.
+       */
+
+      float ax, ay, bx, by;
+      model_to_preview(d->xmin, d->ymin, &ax, &ay);
+      model_to_preview(d->xmax, d->ymax, &bx, &by);
+      int x0 = (int)(fminf(ax, bx) * TEST_WIDTH);
+      int x1 = (int)(fmaxf(ax, bx) * TEST_WIDTH);
+      int y0 = (int)(fminf(ay, by) * TEST_HEIGHT);
+      int y1 = (int)(fmaxf(ay, by) * TEST_HEIGHT);
       uint16_t c = d->frontal ? COL_GREEN : COL_YELLOW;
       draw_rect_outline(x0, y0, x1, y1, c);
 
       for (int k = 0; k < NUM_KP; k++)
         {
-          int kx = (int)(d->kp[k][0] * TEST_WIDTH);
-          int ky = (int)(d->kp[k][1] * TEST_HEIGHT);
-          draw_marker(kx, ky, COL_CYAN);
+          float pu, pv;
+          model_to_preview(d->kp[k][0], d->kp[k][1], &pu, &pv);
+          draw_marker((int)(pu * TEST_WIDTH), (int)(pv * TEST_HEIGHT),
+                      COL_CYAN);
         }
     }
 }
