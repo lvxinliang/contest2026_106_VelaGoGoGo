@@ -110,13 +110,15 @@ extern "C" {
  */
 
 #define PRESENT_FRAMES_TO_START  2
-#define ABSENT_FRAMES_TO_STOP    5
+#define ABSENT_FRAMES_TO_STOP    3
 
-/* Inference pacing.  Idle: ~3 fps for a responsive wake.  Talking: much
- * slower — we only need to notice the face leaving, and shedding CPU here
- * keeps the (higher-priority) audio path from ever starving. */
+/* Inference pacing.  Idle: ~3 fps for a responsive wake.  Talking: keep
+ * polling briskly so "face left -> exit" stays responsive (exit latency ~=
+ * ABSENT_FRAMES_TO_STOP * FRAME_INTERVAL_TALK_US, here ~1.2s). The USB-driver
+ * fix (lowered UVC prio + yielding ISO poll) means this inference no longer
+ * starves the audio path, so we no longer need the old 800ms throttle. */
 #define FRAME_INTERVAL_IDLE_US   (300 * 1000)
-#define FRAME_INTERVAL_TALK_US   (800 * 1000)
+#define FRAME_INTERVAL_TALK_US   (400 * 1000)
 
 /* Worker runs well below the UI/audio/network so heavy TFLite inference never
  * preempts the audio driver's message path (which hangs the vendor codec).
