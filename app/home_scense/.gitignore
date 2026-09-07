@@ -1,5 +1,6 @@
 # NuttX in-tree build artifacts
 *.o
+*.su
 .built
 .depend
 Make.dep

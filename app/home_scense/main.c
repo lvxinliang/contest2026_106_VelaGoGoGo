@@ -22,6 +22,7 @@
 #ifdef CONFIG_LVX_USE_DEMO_CONTEST2026_106_DOUBAO_VOICE
 #include "doubao/doubao_voice.h"
 #endif
+#include "face_detect.h"   /* defines HOME_SCENSE_FACE_DETECT_ENABLED if active */
 
 /* Observer callbacks from ui_main.c */
 extern void time_observer_cb(lv_observer_t *, lv_subject_t *);
@@ -279,6 +280,12 @@ int main(int argc, FAR char *argv[])
 #ifdef CONFIG_LVX_USE_DEMO_CONTEST2026_106_DOUBAO_VOICE
     doubao_voice_init();
 #endif
+#ifdef HOME_SCENSE_FACE_DETECT_ENABLED
+    /* Background frontal-face detection: opens/closes the full-duplex
+     * conversation as a face enters/leaves the camera. No LCD preview. */
+    if (face_detect_start() != 0)
+        LV_LOG_ERROR("face_detect_start failed");
+#endif
     ui_settings_init(lv_scr_act());
 #ifdef CONFIG_LVX_USE_DEMO_CONTEST2026_106_DOUBAO_VOICE
     ui_voice_create(ui_settings_home_content());
@@ -348,6 +355,9 @@ int main(int argc, FAR char *argv[])
     }
 #endif
 
+#ifdef HOME_SCENSE_FACE_DETECT_ENABLED
+    face_detect_stop();
+#endif
 #ifdef CONFIG_LVX_USE_DEMO_CONTEST2026_106_DOUBAO_VOICE
     doubao_voice_deinit();
 #endif
