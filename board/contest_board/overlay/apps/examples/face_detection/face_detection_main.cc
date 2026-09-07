@@ -104,6 +104,54 @@
 #  define FACE_ROTATE 270
 #endif
 
+/* Horizontal mirror compensation.
+ *
+ * FACE_ROTATE only expresses pure rotations (0/90/180/270).  A front/selfie
+ * sensor whose captured image is left-right flipped (the preview moves
+ * OPPOSITE to the subject: move right -> image goes left) needs an additional
+ * mirror that no rotation can represent.  Set MIRROR_X to 1 for such a sensor.
+ * The mirror is applied to BOTH the preview write and the model input (same
+ * horizontal axis), so detected boxes/keypoints still land on the preview
+ * face without touching model_to_preview.
+ */
+
+#ifndef MIRROR_X
+#  define MIRROR_X 1
+#endif
+
+/* Overlay back-rotation (box/keypoint drawing only).
+ *
+ * Normally the overlay should invert FACE_ROTATE with the SAME angle.  But on
+ * this board the model-output coordinate convention + LCD scan direction add
+ * an extra rotation that FACE_ROTATE's inverse does not account for, so the
+ * drawn box comes out rotated relative to the face.  This decouples the DRAW
+ * mapping from the model-input rotation: FACE_ROTATE stays 270 (detection is
+ * correct — do not change it), and OVERLAY_ROTATE is tuned independently so
+ * the box tracks the face.  Try 0 / 90 / 180 / 270; whichever makes the box
+ * follow the face is the right one for this hardware.
+ */
+
+#ifndef OVERLAY_ROTATE
+#  define OVERLAY_ROTATE 0
+#endif
+
+/* Overlay mirror (box/keypoint drawing only), applied AFTER OVERLAY_ROTATE.
+ *
+ * A rotation can never cancel a reflection, so if the drawn box is left-right
+ * reversed vs the face (but up-down correct) no OVERLAY_ROTATE value will fix
+ * it — that is a horizontal mirror in the model-output/display path.  These
+ * two flags add the missing reflection.  Rotate + mirror_x + mirror_y together
+ * can reach any of the 16 orientations, so the box can always be made to track
+ * the face by tuning these three knobs on the device.
+ */
+
+#ifndef OVERLAY_MIRROR_X
+#  define OVERLAY_MIRROR_X 1
+#endif
+#ifndef OVERLAY_MIRROR_Y
+#  define OVERLAY_MIRROR_Y 0
+#endif
+
 /* Keypoint indices in the BlazeFace output (left/right labels are only
  * a convention; the frontal test below is symmetric so it does not matter
  * which physical eye is index 0 vs 1).
@@ -230,28 +278,32 @@ static int mjpeg_output(JDEC *jd, void *bitmap, JRECT *rect)
           uint8_t g = *src++;
           uint8_t r = *src++;
 
-          /* RGB565 for LCD preview */
+          /* RGB565 for LCD preview (horizontally mirrored when MIRROR_X) */
 
-          g_rgbbuf[y * cpw + x] =
+          uint32_t xp = MIRROR_X ? (cpw - 1 - x) : x;
+          g_rgbbuf[y * cpw + xp] =
             ((r & 0xf8) << 8) | ((g & 0xfc) << 3) | (b >> 3);
 
           /* 128x128 RGB FLOAT32 for inference, rotated to upright per
-           * FACE_ROTATE so BlazeFace sees an upright face.
+           * FACE_ROTATE so BlazeFace sees an upright face.  The same
+           * horizontal mirror as the preview is applied first (xi) so the
+           * detected boxes still land on the preview face.
            */
 
           if (g_inf_rgb && g_inf_srcw > 0 && g_inf_srch > 0)
             {
+              uint32_t xi = MIRROR_X ? (g_inf_srcw - 1 - x) : x;
 #if FACE_ROTATE == 90
               int dx = (int)((g_inf_srch - 1 - y) * IN_W / g_inf_srch);
-              int dy = (int)(x * IN_H / g_inf_srcw);
+              int dy = (int)(xi * IN_H / g_inf_srcw);
 #elif FACE_ROTATE == 180
-              int dx = (int)((g_inf_srcw - 1 - x) * IN_W / g_inf_srcw);
+              int dx = (int)((g_inf_srcw - 1 - xi) * IN_W / g_inf_srcw);
               int dy = (int)((g_inf_srch - 1 - y) * IN_H / g_inf_srch);
 #elif FACE_ROTATE == 270
               int dx = (int)(y * IN_W / g_inf_srch);
-              int dy = (int)((g_inf_srcw - 1 - x) * IN_H / g_inf_srcw);
+              int dy = (int)((g_inf_srcw - 1 - xi) * IN_H / g_inf_srcw);
 #else
-              int dx = (int)(x * IN_W / g_inf_srcw);
+              int dx = (int)(xi * IN_W / g_inf_srcw);
               int dy = (int)(y * IN_H / g_inf_srch);
 #endif
               if (dx >= IN_W) dx = IN_W - 1;
@@ -624,15 +676,26 @@ static void fb_blit(uint32_t w, uint32_t h)
 
 static inline void model_to_preview(float mx, float my, float *px, float *py)
 {
-#if FACE_ROTATE == 90
-  *px = my;          *py = 1.0f - mx;
-#elif FACE_ROTATE == 180
-  *px = 1.0f - mx;   *py = 1.0f - my;
-#elif FACE_ROTATE == 270
-  *px = 1.0f - my;   *py = mx;
+  float rx, ry;
+#if OVERLAY_ROTATE == 90
+  rx = my;          ry = 1.0f - mx;
+#elif OVERLAY_ROTATE == 180
+  rx = 1.0f - mx;   ry = 1.0f - my;
+#elif OVERLAY_ROTATE == 270
+  rx = 1.0f - my;   ry = mx;
 #else
-  *px = mx;          *py = my;
+  rx = mx;          ry = my;
 #endif
+
+#if OVERLAY_MIRROR_X
+  rx = 1.0f - rx;
+#endif
+#if OVERLAY_MIRROR_Y
+  ry = 1.0f - ry;
+#endif
+
+  *px = rx;
+  *py = ry;
 }
 
 static void overlay_faces(int ndet, int any_frontal)
