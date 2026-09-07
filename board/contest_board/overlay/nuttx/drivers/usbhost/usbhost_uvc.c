@@ -1478,8 +1478,17 @@ static int uvc_data_start_capture(FAR struct imgdata_s *data,
   argv[0] = arg_str;
   argv[1] = NULL;
 
+  /* Run the ISO stream thread BELOW the audio path.  The isochronous IN
+   * reader busy-waits (see ehci-driver.c sunxi_ioc_wait); at the stock
+   * priority (CONFIG_USBHOST_UVC_DEFPRIO=150, above the ~100 audio threads)
+   * it monopolizes a CPU core for the whole stream and starves the internal
+   * sunxi audio codec's time-critical DMA/message servicing, which hangs
+   * audio capture. Hardcoded here (not via Kconfig) so this stays a
+   * source-only, incremental build. */
+
+#define UVC_STREAM_PRIO 70
   ret = kthread_create("uvc_stream",
-                       CONFIG_USBHOST_UVC_DEFPRIO,
+                       UVC_STREAM_PRIO,
                        CONFIG_USBHOST_UVC_STACKSIZE,
                        usbhost_uvc_stream_thread,
                        argv);

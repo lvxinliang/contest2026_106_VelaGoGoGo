@@ -2032,8 +2032,24 @@ static int sunxi_ioc_wait(struct sunxi_epinfo_s *epinfo)
                */
 
               up_udelay(125);
+              ++spins;
 
-              if (++spins > 8000)        /* ~1s watchdog */
+              /* Release the whole CPU core periodically instead of pure
+               * busy-waiting.  A low-prio pure busy-wait still pins one core of
+               * this dual-core SoC for the entire stream and starves the
+               * internal sunxi audio codec's time-critical DMA/message
+               * servicing (its worker then receives stale messages and spins,
+               * hanging audio capture).  Every ~1ms of micro-frame polling we
+               * sleep ~1ms (one tick), yielding the core to the audio path;
+               * when payloads are actually flowing the FIFO path above returns
+               * immediately, so this only fires during genuine idle gaps. */
+
+              if ((spins & 7) == 0)
+                {
+                  nxsig_usleep(1000);
+                }
+
+              if (spins > 8000)          /* ~1s+ watchdog */
                 {
                   epinfo->xfrd    = 0;
                   epinfo->result  = -EAGAIN;
