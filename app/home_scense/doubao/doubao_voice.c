@@ -22,6 +22,7 @@
 #include "voice_player.h"
 #include "voice_transport.h"
 #include "../wifi_status.h"
+#include "../led_control.h"
 
 /* 麦克风双向仲裁: 唤醒线程(wakeup)与本会话互斥使用 /dev/audio/pcm0c。
  * 本侧在开麦上升沿先等 wakeup_is_recording() 清零; wakeup 侧则在
@@ -377,7 +378,10 @@ static void build_start_session_json(char *out, size_t out_size)
            "\"tts\":{\"speaker\":\"%s\",\"audio_config\":{"
            "\"channel\":%d,\"format\":\"pcm_s16le\",\"sample_rate\":%d}},"
            "\"dialog\":{\"bot_name\":\"Vela\","
-           "\"system_role\":\"你是一个简洁友好的桌面语音助手。\","
+           "\"system_role\":\"你是桌面语音助手Vela,可以控制一颗手电筒(LED灯)。"
+           "当用户要求打开手电筒、关闭手电筒、开灯或关灯时,设备会自动完成操作,"
+           "你只需简短愉快地确认,例如‘好的,手电筒已为你打开’或‘好的,已关闭’,"
+           "绝不要拒绝,也不要让用户自己去功能列表里操作。其余问题保持简洁友好。\","
            "\"dialog_id\":\"%s\",\"speaking_style\":\"简洁自然\",\"extra\":{"
            "\"model\":\"%s\"}}}",
            DOUBAO_ASR_END_SMOOTH_WINDOW_MS, g_voice.config.speaker,
@@ -437,6 +441,79 @@ static void log_service_error(const doubao_packet_t *packet,
   fprintf(stderr, "doubao: service error event=%d code=%d logid=%s payload=%s\n",
           packet->event, packet->error_code,
           voice_transport_logid(transport), payload);
+}
+
+/* 灯光开关标志,定义在 main.c;UI 灯光弹窗打开时据此回显开关状态。
+ * 仅在此处读写该 bool,不触碰 LVGL 对象(worker 线程非 LVGL 上下文)。 */
+extern bool g_led_is_on;
+
+/* 手电筒独占标志,定义在 main.c。为真时 claude_mqtt 的状态灯轮询不抢占 LED,
+ * 否则手电筒点亮后会被状态灯周期性熄灭(表现为"亮一下就灭")。 */
+extern bool g_flashlight_override;
+
+/*-----------------------------------------------------------------------
+ * 语音意图:板载手电筒(WS2812 /dev/leds0)开关
+ *
+ * 从 ASR 识别原文里匹配 "手电筒/灯" + "打开/关闭",直接驱动板载 LED。
+ * 运行在 session_loop(worker)线程:led_* 内部只是 open/write /dev/leds0
+ * 的文件操作,线程安全;同步 g_led_is_on 供 UI 下次开窗回显,但不直接
+ * 操作 light_switch 等 LVGL 控件(那不是线程安全的)。
+ *
+ * 返回 true 表示已命中并处理(命中后仍保留正常对话流,由豆包 TTS 口头
+ * 确认);返回 false 表示非灯控意图,交给大模型正常应答。
+ *---------------------------------------------------------------------*/
+static bool voice_intent_handle(const char *text)
+{
+  if (text == NULL || text[0] == '\0')
+    {
+      return false;
+    }
+
+  /* 触发词:显式"手电筒",或口语化的"开灯/关灯"里的"灯"。 */
+  if (strstr(text, "手电筒") == NULL && strstr(text, "灯") == NULL)
+    {
+      return false;
+    }
+
+  bool want_on  = strstr(text, "打开") || strstr(text, "开启") ||
+                  strstr(text, "开一下") || strstr(text, "开灯");
+  bool want_off = strstr(text, "关闭") || strstr(text, "关掉") ||
+                  strstr(text, "关一下") || strstr(text, "关灯");
+
+  /* 同时命中或都没命中(如只说"手电筒") → 非明确指令,交给大模型。 */
+  if (want_on == want_off)
+    {
+      return false;
+    }
+
+  /* two-pass ASR 会把同一句流式返回十几次,若每帧都驱动 WS2812 会造成
+   * 反复重写、肉眼可见的闪烁。这里只在"目标状态与当前状态不同"时才动
+   * 硬件,即按状态翻转去抖:重复的相同指令直接跳过。 */
+  if (want_on)
+    {
+      if (!g_led_is_on)
+        {
+          led_controller_init();          /* 幂等,重复调用无副作用 */
+          led_set_color(LED_COLOR_WHITE); /* 手电筒:白光最亮 */
+          led_set_brightness(100);
+          g_led_is_on = true;
+          g_flashlight_override = true;   /* 抢占 LED,状态灯让位 */
+          led_on();
+          DOUBAO_LOG("voice intent: flashlight ON (\"%s\")", text);
+        }
+    }
+  else
+    {
+      if (g_led_is_on)
+        {
+          g_led_is_on = false;
+          g_flashlight_override = false;  /* 归还 LED 给状态灯 */
+          led_off();
+          DOUBAO_LOG("voice intent: flashlight OFF (\"%s\")", text);
+        }
+    }
+
+  return true;
 }
 
 /* 处理一帧服务端数据。turn_open:本轮是否已开(用户话首开新轮);
@@ -506,10 +583,26 @@ static void handle_fd(const doubao_packet_t *packet,
       if (doubao_protocol_get_text(packet->payload, packet->payload_size,
                                    "text", text, sizeof(text)))
         {
+          /* 诊断:确认 ASR 识别原文与意图匹配结果。 */
+          DOUBAO_LOG("ASR text=[%s]", text);
+
           pthread_mutex_lock(&g_voice.mutex);
           copy_text(g_voice.snapshot.user_text,
                     sizeof(g_voice.snapshot.user_text), text);
           pthread_mutex_unlock(&g_voice.mutex);
+
+          /* 灯控意图:命中"打开/关闭手电筒"直接驱动板载 LED。
+           * ASR two-pass 会多次回本轮识别文本,voice_intent_handle
+           * 幂等(反复置同一状态无副作用),故此处逐帧调用即可。 */
+          voice_intent_handle(text);
+        }
+      else
+        {
+          /* 提取失败:打出原始 payload 头部,便于定位识别文本所在的 key。 */
+          int dump = (int)(packet->payload_size < 400 ?
+                           packet->payload_size : 400);
+          DOUBAO_LOG("ASR get_text FAIL, raw=%.*s", dump,
+                     (const char *)packet->payload);
         }
     }
   else if (packet->event == DOUBAO_EVENT_CHAT_RESPONSE)

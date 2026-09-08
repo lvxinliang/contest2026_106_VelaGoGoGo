@@ -55,6 +55,7 @@ extern lv_obj_t *gamble_window;
 /* LED state */
 extern bool    g_led_is_on;
 extern int32_t g_led_brightness;
+extern bool    g_flashlight_override;
 
 /* Function declarations */
 void init_fonts(void);

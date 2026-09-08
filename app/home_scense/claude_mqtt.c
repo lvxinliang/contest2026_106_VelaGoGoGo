@@ -179,12 +179,16 @@ void claude_mqtt_poll(lv_timer_t *timer)
     pthread_mutex_unlock(&g_lock);
     if (changed || !strcmp(state, "default") || lv_tick_elaps(lease) < LEASE_SECONDS * 1000) {
         ui_claude_status_set(state);
-        if (!strcmp(state, "default")) { led_off(); }
-        else if (!strcmp(state, "idle")) { led_set_mode_static(LED_COLOR_BLUE); led_on(); }
-        else { led_set_mode_blink(LED_COLOR_GREEN, 2); led_on(); }
+        /* 手电筒开启时独占 LED,状态灯只更新 UI 不抢灯(否则会周期性熄灭手电筒)。 */
+        if (!g_flashlight_override) {
+            if (!strcmp(state, "default")) { led_off(); }
+            else if (!strcmp(state, "idle")) { led_set_mode_static(LED_COLOR_BLUE); led_on(); }
+            else { led_set_mode_blink(LED_COLOR_GREEN, 2); led_on(); }
+        }
     } else {
         pthread_mutex_lock(&g_lock); strcpy(g_state, "default"); pthread_mutex_unlock(&g_lock);
-        ui_claude_status_set("default"); led_off();
+        ui_claude_status_set("default");
+        if (!g_flashlight_override) { led_off(); }
     }
 }
 

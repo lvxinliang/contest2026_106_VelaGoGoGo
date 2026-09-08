@@ -116,6 +116,11 @@ lv_obj_t *gamble_window;
 bool    g_led_is_on;
 int32_t g_led_brightness;
 
+/* 手电筒独占标志:用户显式开手电筒(语音/UI)时置位。为真时 Claude 状态灯
+ * (claude_mqtt)不再抢占 LED,避免手电筒被状态轮询周期性熄灭。默认 false,
+ * 以便开机及未开手电筒时状态灯正常显示。 */
+bool    g_flashlight_override;
+
 /*-----------------------------------------------------------------------
  * Idle detection — 10 s no input → emoji screen
  *---------------------------------------------------------------------*/

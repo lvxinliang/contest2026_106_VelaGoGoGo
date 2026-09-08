@@ -22,7 +22,11 @@ void led_adapter_init(void)
         LV_LOG_ERROR("LED init failed: %s", led_get_error_string(err));
         return;
     }
-    g_led_is_on      = true;
+    /* 初始化仅设置默认色/亮度,并未调用 led_on() 点亮,故实际是熄灭态。
+     * g_led_is_on 必须如实置 false,否则语音/UI 的开灯去抖会把"首次打开"
+     * 误判为"已开"而跳过(表现:第一次说打开手电筒灯不亮,关一次后才正常)。 */
+    g_led_is_on      = false;
+    g_flashlight_override = false;
     g_led_brightness = 50;
     led_set_color(LED_COLOR_WHITE);
     led_set_brightness(g_led_brightness);
@@ -37,12 +41,14 @@ void led_adapter_deinit(void)
 void led_adapter_on(void)
 {
     g_led_is_on = true;
+    g_flashlight_override = true;   /* 手电筒接管 LED,状态灯让位 */
     led_on();
 }
 
 void led_adapter_off(void)
 {
     g_led_is_on = false;
+    g_flashlight_override = false;  /* 归还 LED 给 Claude 状态灯 */
     int fd = open("/dev/leds0", O_RDWR);
     if (fd >= 0) {
         uint32_t off = 0;
