@@ -17,7 +17,7 @@ overlay/apps/...               → <workspace>/apps/...
 overlay/vendor/allwinnertech/… → <workspace>/vendor/allwinnertech/…
 ```
 
-## 内容(51 个文件)
+## 内容(52 个文件)
 
 | 区域 | 文件 | 说明 |
 |------|------|------|
@@ -27,10 +27,11 @@ overlay/vendor/allwinnertech/… → <workspace>/vendor/allwinnertech/…
 | apps (25) | `examples/uvc_test/` | UVC 摄像头预览(含 tjpgd) |
 | | `examples/person_detection/` | TFLite Micro 人形检测 |
 | | `examples/face_detection/` | BlazeFace 正脸检测 |
-| vendor (19) | `chips/r528/drivers/rtos-hal/hal/source/usb/uhc/*` | R528 EHCI USB 主机驱动(11) |
+| vendor (20) | `chips/r528/drivers/rtos-hal/hal/source/usb/uhc/*` | R528 EHCI USB 主机驱动(11) |
 | | `chips/.../usb/{CMakeLists.txt,Kconfig,Make.defs,platform/sun20iw1/*}` | USB HAL 构建接入 |
 | | `chips/r528/drv/spi/drv_spi.c` | ILI9341 SPI 时钟 40→60MHz |
 | | `boards/r528/r528s3-*/src/r528_bringup.c` | USB host 初始化 |
+| | `chips/r528/drivers/rtos-hal/hal/source/cir_tx/hal_cir_tx.c` | 红外发射修复: ①模块时钟 set 12MHz(载波回到38kHz) ②send_ir_code 改 FIFO 流式发送(支持 >128 字节的空调整机帧) |
 
 > **defconfig 不在 overlay 里**:功能开关直接写进 `board/contest_board/configs/nsh/defconfig`
 > (build 实际使用的那份),`CONFIG_VIDEO_STREAM` 由 `USBHOST_UVC` 的 `select` 自动开启,
