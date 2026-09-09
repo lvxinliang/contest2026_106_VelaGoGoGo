@@ -17,16 +17,17 @@ overlay/apps/...               → <workspace>/apps/...
 overlay/vendor/allwinnertech/… → <workspace>/vendor/allwinnertech/…
 ```
 
-## 内容(52 个文件)
+## 内容(53 个文件)
 
 | 区域 | 文件 | 说明 |
 |------|------|------|
 | nuttx (7) | `drivers/lcd/ili9341.c` | ILI9341 `putarea`(整帧刷新提速) |
 | | `drivers/usbhost/{usbhost_uvc.c,Kconfig,Make.defs,CMakeLists.txt}` | UVC 主机类驱动 + 构建接线 |
 | | `include/nuttx/usb/{uvc.h,usbhost_uvc.h}` | UVC 定义 |
-| apps (25) | `examples/uvc_test/` | UVC 摄像头预览(含 tjpgd) |
+| apps (26) | `examples/uvc_test/` | UVC 摄像头预览(含 tjpgd) |
 | | `examples/person_detection/` | TFLite Micro 人形检测 |
 | | `examples/face_detection/` | BlazeFace 正脸检测 |
+| | `audioutils/nxaudio/nxaudio.c` | configure_audio 清零 + 显式 ac_subtype=AUDIO_FMT_PCM(加固豆包 TTS 播放设备配置) |
 | vendor (20) | `chips/r528/drivers/rtos-hal/hal/source/usb/uhc/*` | R528 EHCI USB 主机驱动(11) |
 | | `chips/.../usb/{CMakeLists.txt,Kconfig,Make.defs,platform/sun20iw1/*}` | USB HAL 构建接入 |
 | | `chips/r528/drv/spi/drv_spi.c` | ILI9341 SPI 时钟 40→60MHz |
