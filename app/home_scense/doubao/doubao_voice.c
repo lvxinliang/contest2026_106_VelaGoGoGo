@@ -23,6 +23,7 @@
 #include "voice_transport.h"
 #include "../wifi_status.h"
 #include "../led_control.h"
+#include "../ac_ir_control.h"
 
 /* 麦克风双向仲裁: 唤醒线程(wakeup)与本会话互斥使用 /dev/audio/pcm0c。
  * 本侧在开麦上升沿先等 wakeup_is_recording() 清零; wakeup 侧则在
@@ -378,10 +379,11 @@ static void build_start_session_json(char *out, size_t out_size)
            "\"tts\":{\"speaker\":\"%s\",\"audio_config\":{"
            "\"channel\":%d,\"format\":\"pcm_s16le\",\"sample_rate\":%d}},"
            "\"dialog\":{\"bot_name\":\"Vela\","
-           "\"system_role\":\"你是桌面语音助手Vela,可以控制一颗手电筒(LED灯)。"
-           "当用户要求打开手电筒、关闭手电筒、开灯或关灯时,设备会自动完成操作,"
-           "你只需简短愉快地确认,例如‘好的,手电筒已为你打开’或‘好的,已关闭’,"
-           "绝不要拒绝,也不要让用户自己去功能列表里操作。其余问题保持简洁友好。\","
+           "\"system_role\":\"你是桌面语音助手Vela,可以控制一颗手电筒(LED灯)"
+           "和一台空调。当用户要求打开/关闭手电筒、开灯/关灯、打开/关闭空调时,"
+           "设备会自动完成操作,你只需简短愉快地确认,例如‘好的,手电筒已为你打开’、"
+           "‘好的,空调已打开’或‘好的,已关闭’,绝不要拒绝,也不要让用户自己去功能"
+           "列表里操作。其余问题保持简洁友好。\","
            "\"dialog_id\":\"%s\",\"speaking_style\":\"简洁自然\",\"extra\":{"
            "\"model\":\"%s\"}}}",
            DOUBAO_ASR_END_SMOOTH_WINDOW_MS, g_voice.config.speaker,
@@ -462,11 +464,124 @@ extern bool g_flashlight_override;
  * 返回 true 表示已命中并处理(命中后仍保留正常对话流,由豆包 TTS 口头
  * 确认);返回 false 表示非灯控意图,交给大模型正常应答。
  *---------------------------------------------------------------------*/
+/* 空调红外学习去抖: two-pass ASR 会把"学习空调红外"重复回传十几帧,若每帧
+ * 都起线程会并发读 /dev/lirc0、串口输出严重交织。用该标志保证只抓一次。 */
+static volatile bool s_ac_learning = false;
+
+/* 红外学习进行中标志: 为真时 doubao_voice_start() 拒绝启动会话(挡住 face_detect
+ * 等把音频拉回), 使采集窗口安静, 避免 CPU 抢占导致接收 FIFO 丢样。
+ * 注: wakeup 线程原本也据此让出麦克风, 但该暂停已按需求暂时移除 —— 下次要
+ * 学习红外时, 需在 wakeup.c 主循环重新加回 g_ir_learning 判空让麦, 否则唤醒
+ * 麦克风采集的音频负载仍会污染抓帧。 */
+volatile bool g_ir_learning = false;
+
+/* 本次学习输出的数组名: "学习开/关空调"分别抓开机帧/关机帧。仅在 s_ac_learning
+ * 为真期间(单次学习)读写, 无并发。 */
+static const char *s_ac_learn_label = "g_ac_frame_power_on";
+
+/* 空调红外抓帧线程:先停掉当前豆包会话并暂停唤醒,让系统安静下来再采集,
+ * 否则并发音频负载会把每次采集都丢样毁掉(实测)。 */
+static void *ac_ir_learn_thread(void *arg)
+{
+  (void)arg;
+
+  g_ir_learning = true;      /* 挡住会话重启(见 doubao_voice_start) */
+  doubao_voice_stop();       /* 结束当前会话,释放音频/网络负载 */
+  usleep(700 * 1000);        /* 等音频线程与 DMA 真正停下、FIFO 静默 */
+
+  ac_ir_learn_dump(s_ac_learn_label, 10000);
+
+  g_ir_learning = false;     /* 恢复 */
+  s_ac_learning = false;
+  return NULL;
+}
+
+/* 空调开关状态,用于按状态翻转去抖(two-pass ASR 会重复回同一句)。
+ * 初值 false 假设上电时空调为关;首条明确指令应为"打开空调"。 */
+/* AC 指令时间去抖: two-pass ASR 会把同一句"打开空调"重复回传十几帧, 需去重;
+ * 但不同次的命令(如没生效再喊一遍)必须允许重发。故按"同方向指令 N 毫秒内
+ * 视为同一句而跳过"来去抖, 而非按开关状态(否则空调没真正开时再喊会被永久挡)。 */
+#define AC_INTENT_COOLDOWN_MS 3000
+static uint64_t s_ac_last_ms = 0;
+static int      s_ac_last_dir = 0;   /* +1=开, -1=关, 0=无 */
+
 static bool voice_intent_handle(const char *text)
 {
   if (text == NULL || text[0] == '\0')
     {
       return false;
+    }
+
+  /* 学习触发词:说"学习空调/学习开空调"抓开机帧,"学习关空调"抓关机帧。
+   * 抓到的数组打印到串口日志(见 ac_ir_learn_dump), 需含"学习"+"空调"。
+   * 放在开/关控制分支之前, 否则"学习关空调"里的"关空调"会被当成关机指令。 */
+  if (strstr(text, "学习") != NULL && strstr(text, "空调") != NULL)
+    {
+      /* 去抖:已有一次学习在进行则忽略后续重复帧。 */
+      if (!s_ac_learning)
+        {
+          pthread_t tid;
+          pthread_attr_t attr;
+
+          /* 含"关"(关/关闭)→ 抓关机帧, 否则抓开机帧。 */
+          s_ac_learn_label = (strstr(text, "关") != NULL)
+                             ? "g_ac_frame_power_off"
+                             : "g_ac_frame_power_on";
+          s_ac_learning = true;
+          pthread_attr_init(&attr);
+          pthread_attr_setstacksize(&attr, 8192);
+          if (pthread_create(&tid, &attr, ac_ir_learn_thread, NULL) == 0)
+            {
+              pthread_detach(tid);
+              DOUBAO_LOG("voice intent: AC IR learn started -> %s (\"%s\")",
+                         s_ac_learn_label, text);
+            }
+          else
+            {
+              s_ac_learning = false;  /* 起线程失败,允许重试 */
+            }
+          pthread_attr_destroy(&attr);
+        }
+      return true;
+    }
+
+  /* 空调红外意图:命中"空调" + 明确的开/关,直接驱动红外发射。放在灯控
+   * 触发词判断之前,因为"空调"不含"灯/手电筒"会被下面的 guard 提前放行。 */
+  if (strstr(text, "空调") != NULL)
+    {
+      bool ac_on  = strstr(text, "打开") || strstr(text, "开启") ||
+                    strstr(text, "开一下") || strstr(text, "开空调");
+      bool ac_off = strstr(text, "关闭") || strstr(text, "关掉") ||
+                    strstr(text, "关一下") || strstr(text, "关空调");
+
+      if (ac_on != ac_off)   /* 仅在明确单向指令时动作 */
+        {
+          int dir = ac_on ? 1 : -1;
+          uint64_t now = now_ms();
+
+          /* 同方向指令且在冷却期内 → 判为同一句的重复帧, 跳过。
+           * 超出冷却期(或换方向)则重新发送 —— 支持"没生效再喊一遍"。 */
+          if (dir == s_ac_last_dir &&
+              (now - s_ac_last_ms) < AC_INTENT_COOLDOWN_MS)
+            {
+              return true;
+            }
+
+          s_ac_last_dir = dir;
+          s_ac_last_ms = now;
+
+          if (ac_on)
+            {
+              DOUBAO_LOG("voice intent: AC ON (\"%s\")", text);
+              ac_ir_power_on();
+            }
+          else
+            {
+              DOUBAO_LOG("voice intent: AC OFF (\"%s\")", text);
+              ac_ir_power_off();
+            }
+          return true;
+        }
     }
 
   /* 触发词:显式"手电筒",或口语化的"开灯/关灯"里的"灯"。 */
@@ -1156,6 +1271,13 @@ void doubao_voice_deinit(void)
 
 int doubao_voice_start(void)
 {
+  /* 红外学习期间拒绝启动会话: 否则 face_detect(人脸→全双工)等路径会在学习
+   * 的静默窗口里把豆包会话+音频 DMA 拉回来, 抢占 CPU 导致接收 FIFO 丢样、
+   * 抓不到干净帧。返回 -EBUSY 让调用方(如 face_detect)学习结束后自动重试。 */
+  if (g_ir_learning)
+    {
+      return -EBUSY;
+    }
   if (!g_voice.initialized || !doubao_voice_is_configured())
     {
       return -ENOKEY;

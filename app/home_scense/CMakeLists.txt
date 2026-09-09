@@ -13,7 +13,8 @@ if(CONFIG_LVX_USE_DEMO_CONTEST2026_106_HELLO_APP)
     ui_claude_status.c
     ui_status_bar.c
     ui_settings.c
-    wifi_status.c)
+    wifi_status.c
+    ac_ir_control.c)
   list(APPEND home_scense_srcs
     ${CMAKE_CURRENT_LIST_DIR}/../../../../apps/netutils/mqttc/MQTT-C/src/mqtt.c
     ${CMAKE_CURRENT_LIST_DIR}/../../../../apps/netutils/mqttc/MQTT-C/src/mqtt_pal.c)
