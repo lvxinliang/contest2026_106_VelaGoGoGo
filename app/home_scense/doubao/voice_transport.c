@@ -44,28 +44,46 @@ static int curl_recv_to(CURL *c, curl_socket_t fd, void *b, size_t n, int ms) {
   } while(el<ms);
   return 0; }
 
+/* ms 窗口是否已过(用于 got==0 的干净超时判定;ms<=0 视为立即过期) */
+static int el_expired(struct timeval *st, int ms) {
+  struct timeval now,df; int el;
+  if(ms<=0) return 1;
+  gettimeofday(&now,NULL); timersub(&now,st,&df);
+  el=(int)(df.tv_sec*1000+df.tv_usec/1000);
+  return el>=ms;
+}
+
 /* 在 ms 超时内精确读满 n 字节(累加分段到达的字节)。
  * 返回 n=读满;0=整段超时且一个字节都没来(干净超时);-EIO=读到部分后中断。
- * 修复:此前 ws_recv 直接 curl_recv_to(hd,2,ms),若帧头分两次到达(先到 1
- * 字节)会 !=2 而误判 -EIO,进而被 voice_transport_receive 折叠成 0,让
- * run_turn 收 END_ASR 后第一次 recv 就"超时"退出,豆包回复漏进 idle 循环。 */
+ *
+ * 关键修复(TTS 无声根因):一旦读到部分字节(got>0),就必须把整个 n 字节
+ * 读完,不能受 ms 限制退出。此前 ms=0(session_loop 非阻塞排空)时循环条件
+ * el<0 恒假,只执行一次;若帧头(2B)或大音频帧(16KB+)被 TCP 分片,首次
+ * curl_easy_recv 只读到部分字节,got>0 但 <n,立即退出返回 -EIO,被上层
+ * 当成断连 → session 重连 → 丢失 TTSResponse(352)音频帧 → 只有文字无声音。
+ * 现在:开始读到数据后,即使 ms=0 也持续 select 等待剩余字节读满 n。 */
 static int recv_exact(CURL *c, curl_socket_t fd, uint8_t *b, size_t n, int ms) {
   struct timeval st,now,df; int el; size_t got=0; CURLcode r; size_t nr;
   gettimeofday(&st,NULL);
-  do {
+  for(;;) {
     nr=0; r=curl_easy_recv(c,b+got,n-got,&nr);
     if(r==CURLE_OK&&nr>0){ got+=nr; if(got>=n)return(int)n; continue; }
-    /* 连接关闭/出错:CURLE_OK 且 nr==0 是对端 EOF;非 AGAIN 是错误。
-     * 两者都表示连接已死,立即返回 -ECONNRESET 触发上层重连,
-     * 绝不能继续 select 空转(否则死循环疯狂重试 + 刷日志 → 崩溃)。 */
+    /* 连接关闭/出错:CURLE_OK 且 nr==0 是对端 EOF;非 AGAIN 是错误。 */
     if(r==CURLE_OK&&nr==0) return -ECONNRESET;
     if(r!=CURLE_AGAIN)     return -ECONNRESET;
+    /* AGAIN(暂无数据):已读到半帧则必须继续等剩余字节(TCP 分片),
+     * 一个字节都没读到才受 ms 超时约束(ms=0 立即返回干净超时)。 */
+    if(got==0 && el_expired(&st,ms)) return 0;
     { fd_set f;struct timeval tv={0,20000};
       FD_ZERO(&f);FD_SET(fd,&f);select(FD_SETSIZE,&f,NULL,NULL,&tv); }
-    gettimeofday(&now,NULL);timersub(&now,&st,&df);
-    el=(int)(df.tv_sec*1000+df.tv_usec/1000);
-  } while(el<ms);
-  return got==0?0:-EIO; }
+    /* 已读到部分数据时,给剩余字节一个兜底上限(2s),防止对端只发半帧
+     * 后卡死导致本函数永久阻塞。 */
+    if(got>0){
+      gettimeofday(&now,NULL);timersub(&now,&st,&df);
+      el=(int)(df.tv_sec*1000+df.tv_usec/1000);
+      if(el>2000) return -EIO;
+    }
+  } }
 
 static ssize_t curl_send_to(CURL *c, curl_socket_t fd, const void *d, size_t n, int ms) {
   struct timeval st,now,df; int el; ssize_t s;
@@ -87,6 +105,8 @@ static int ws_upgrade(voice_transport_t *t, const voice_transport_config_t *cfg)
   ln=snprintf(req,sizeof(req),
     "GET /api/v3/realtime/dialogue HTTP/1.1\r\n"
     "Host: openspeech.bytedance.com\r\n"
+    "User-Agent: curl/8.9.1\r\n"
+    "Accept: */*\r\n"
     "Upgrade: websocket\r\nConnection: Upgrade\r\n"
     "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
     "Sec-WebSocket-Version: 13\r\n"
@@ -220,6 +240,7 @@ int voice_transport_send(voice_transport_t*t,voice_ws_opcode_t op,
 int voice_transport_receive(voice_transport_t*t,voice_ws_opcode_t*op,
   uint8_t*d,size_t c,int ms){
   int r,start;if(!t||!t->curl||!op||!d||c==0)return-EINVAL;
+  /* pbf drain: 略过 HTTP 101 尾部残渣, 找到第一个 WS 帧头 0x82 */
   if(t->pbf_len>0){
     for(start=0;start<t->pbf_len-1;start++)
       if(t->pbf[start]==0x82) break;
@@ -228,11 +249,20 @@ int voice_transport_receive(voice_transport_t*t,voice_ws_opcode_t*op,
       memcpy(d,t->pbf+start,n);t->pbf_len=0;*op=VOICE_WS_BINARY;
       return n;}
     t->pbf_len=0;}
-  r=ws_recv(t->curl,t->fd,d,c,ms);
-  if(r==-ETIMEDOUT)return 0;                 /* 干净超时:无数据,让上层继续等 */
-  if(r==-ECONNRESET){*op=VOICE_WS_CLOSE;return r;}  /* 连接已死 → 重连 */
-  if(r==-EMSGSIZE)return 0;                  /* 超大帧丢弃,不断连 */
-  if(r<0){*op=VOICE_WS_CLOSE;return-ECONNRESET;}  /* 读到半帧中断:视为断连重连,不空转 */
+  /* 收到 PING/PONG/CLOSE 等控制帧时 ws_recv 内部处理后返回 0,
+   * 需继续轮询而非向上层返回 0(上层 0=break 接收循环 → 漏帧)。
+   * 此处用 do-while 吞掉连续控制帧, 直到收到数据帧或超时/断连。 */
+  do {
+    r=ws_recv(t->curl,t->fd,d,c,ms);
+    if(r==-ETIMEDOUT)return 0;                 /* 干净超时:无数据,让上层继续等 */
+    if(r==-ECONNRESET){*op=VOICE_WS_CLOSE;return r;}  /* 连接已死 → 重连 */
+    if(r==-EMSGSIZE)return 0;                  /* 超大帧丢弃,不断连 */
+    if(r<0){
+      DOUBAO_ERR("doubao:ws recv err r=%d ms=%d",r,ms);
+      *op=VOICE_WS_CLOSE;return-ECONNRESET;}  /* 读到半帧中断:视为断连重连,不空转 */
+    /* r==0: ws_recv 处理了 PING/PONG, 继续轮询下一帧;
+     * r>0: 收到 BINARY 数据帧, 返回 payload 长度 */
+  } while(r==0);
   *op=VOICE_WS_BINARY;return r; }
 
 const char* voice_transport_logid(const voice_transport_t*t){return t?t->logid:"";}

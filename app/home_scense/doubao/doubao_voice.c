@@ -369,6 +369,26 @@ static int send_text_query(voice_transport_t *t, const char *session_id,
   return send_json(t, DOUBAO_EVENT_CHAT_TEXT_QUERY, session_id, json);
 }
 
+/* 发送 ChatTTSText(500):显式请求服务端对指定文本合成 TTS 音频。
+ * 当服务端 TTSSentenceStart(350) text 为空时,用此事件主动触发 TTS
+ * 合成。payload 格式: {"content":"<text>","start":true,"end":true} */
+static int send_chat_tts_text(voice_transport_t *t, const char *session_id,
+                              const char *text)
+{
+  char esc[DOUBAO_REPLY_MAX * 2 + 8];
+  char json[DOUBAO_REPLY_MAX * 2 + 64];
+
+  if (!text || !text[0])
+    {
+      return -EINVAL;
+    }
+  json_escape(esc, sizeof(esc), text);
+  snprintf(json, sizeof(json),
+           "{\"content\":\"%s\",\"start\":true,\"end\":true}", esc);
+  DOUBAO_LOG("sending ChatTTSText(500): %s", text);
+  return send_json(t, 500, session_id, json);
+}
+
 static void build_start_session_json(char *out, size_t out_size)
 {
   /* 全双工连续对话:dialog.extra 不带 input_mod(push_to_talk),由服务端
@@ -378,11 +398,12 @@ static void build_start_session_json(char *out, size_t out_size)
            "\"end_smooth_window_ms\":%d}},"
            "\"tts\":{\"speaker\":\"%s\",\"audio_config\":{"
            "\"channel\":%d,\"format\":\"pcm_s16le\",\"sample_rate\":%d}},"
-           "\"dialog\":{\"bot_name\":\"Vela\","
-           "\"system_role\":\"你是桌面语音助手Vela,可以控制一颗手电筒(LED灯)"
-           "和一台空调。当用户要求打开/关闭手电筒、开灯/关灯、打开/关闭空调时,"
-           "设备会自动完成操作,你只需简短愉快地确认,例如‘好的,手电筒已为你打开’、"
-           "‘好的,空调已打开’或‘好的,已关闭’,绝不要拒绝,也不要让用户自己去功能"
+           "\"dialog\":{\"bot_name\":\"小犀\","
+           "\"system_role\":\"你叫小犀,是一个简洁友好的桌面语音助手。"
+           "本设备具备手电筒与空调控制功能,由本地系统自动执行,你必须按以下规则回应:"
+           "当用户要求打开/关闭手电筒、开灯/关灯、打开/关闭空调时,"
+           "设备会自动完成操作,你只需简短愉快地确认,例如’好的,手电筒已为你打开’、"
+           "’好的,空调已打开’或’好的,已关闭’,绝不要拒绝,也不要让用户自己去功能"
            "列表里操作。其余问题保持简洁友好。\","
            "\"dialog_id\":\"%s\",\"speaking_style\":\"简洁自然\",\"extra\":{"
            "\"model\":\"%s\"}}}",
@@ -663,12 +684,28 @@ static void handle_fd(const doubao_packet_t *packet,
                                 DOUBAO_TTS_BITS) == 0)
             {
               set_state(DOUBAO_VOICE_PLAYING, NULL);
+              DOUBAO_LOG("player opened (TTS start)");
+            }
+          else
+            {
+              DOUBAO_LOG("player open FAILED dev=%s — audio packets "
+                         "will be dropped", g_voice.config.playback_device);
             }
         }
       if (*player)
         {
           (void)voice_player_write(*player, packet->payload,
                                    packet->payload_size);
+        }
+      else
+        {
+          static int audio_drop_count;
+          if (++audio_drop_count <= 5)
+            {
+              DOUBAO_LOG("audio packet dropped (player=NULL, "
+                         "tts_enabled=%d size=%zu)",
+                         g_voice.config.tts_enabled, packet->payload_size);
+            }
         }
       *last_audio_ms = now_ms();
       return;
@@ -680,6 +717,11 @@ static void handle_fd(const doubao_packet_t *packet,
     }
 
   /* 用户话首 → 开新一轮 */
+  if (packet->event == DOUBAO_EVENT_CONVERSATION_RETRIEVED)
+    {
+      DOUBAO_LOG("conversation history retrieved");
+      return;
+    }
   if ((packet->event == DOUBAO_EVENT_ASR_START ||
        packet->event == DOUBAO_EVENT_ASR_RESPONSE) && !*turn_open)
     {
@@ -727,7 +769,16 @@ static void handle_fd(const doubao_packet_t *packet,
           doubao_protocol_get_text(packet->payload, packet->payload_size,
                                    "text", text, sizeof(text)))
         {
+          DOUBAO_LOG("chat text=[%s]", text);
           append_reply(text);
+        }
+      else
+        {
+          /* 提取失败:打印原始 payload 头部,定位回复文本所在的 key。 */
+          int dump = (int)(packet->payload_size < 400 ?
+                           packet->payload_size : 400);
+          DOUBAO_LOG("chat get_text FAIL, raw=%.*s", dump,
+                     (const char *)packet->payload);
         }
     }
   else if (packet->event == DOUBAO_EVENT_CHAT_ENDED)
@@ -743,6 +794,21 @@ static void handle_fd(const doubao_packet_t *packet,
           *tts_ended = true;
         }
     }
+  /* 协议注释标注 event 350 为 TTS 音频(350/352)。若服务端以 JSON 下发,
+   * 可能内含 base64 编码的 PCM 或音频 URL;此处打印 payload 定位格式。 */
+  else if (packet->event == 350)
+    {
+      int dump = (int)(packet->payload_size < 400 ? packet->payload_size : 400);
+      DOUBAO_LOG("TTS event 350 JSON payload: %.*s", dump,
+                 (const char *)packet->payload);
+    }
+  else
+    {
+      /* 未显式处理的事件：打印 payload 头部便于发现新协议字段 */
+      int dump = (int)(packet->payload_size < 200 ? packet->payload_size : 200);
+      DOUBAO_LOG("unhandled event=%d payload=%.*s", packet->event, dump,
+                 (const char *)packet->payload);
+    }
 }
 
 /*-----------------------------------------------------------------------
@@ -754,7 +820,7 @@ static int establish_session(voice_transport_t **out, char *session_id,
   voice_transport_t *transport = NULL;
   voice_transport_config_t tcfg;
   char connect_id[48];
-  char start_session_json[1024];
+  char start_session_json[2048];
   int ret = -EIO;
 
   make_identifier(session_id, session_id_size, "vela-session");
@@ -786,6 +852,13 @@ static int establish_session(voice_transport_t **out, char *session_id,
   DOUBAO_LOG("connected, logid=%s", voice_transport_logid(transport));
 
   build_start_session_json(start_session_json, sizeof(start_session_json));
+  /* 诊断:验证 JSON 完整且未截断(结尾应为 }}} ),并检查 TTS 配置。 */
+  {
+    size_t json_len = strlen(start_session_json);
+    DOUBAO_LOG("start_session_json len=%zu tail=%.30s",
+               json_len, json_len > 30 ?
+               start_session_json + json_len - 30 : start_session_json);
+  }
 
   if (send_json(transport, DOUBAO_EVENT_START_CONNECTION, session_id, "{}") < 0 ||
       send_json(transport, DOUBAO_EVENT_START_SESSION, session_id,
@@ -843,6 +916,14 @@ static int establish_session(voice_transport_t **out, char *session_id,
       }
   }
   DOUBAO_LOG("session started");
+  /* 发送 CONVERSATION_RETRIEVE(512):加载服务端对话历史上下文。
+   * desktop-app 参考实现每次建连后必发此事件;可能附带启用服务端 TTS 等
+   * 全双工会话能力的信号,缺失则服务端不在 event 350 中填充 TTS text。 */
+  if (send_json(transport, DOUBAO_EVENT_CONVERSATION_RETRIEVE,
+                session_id, "{}") < 0)
+    {
+      DOUBAO_LOG("conversation history retrieve request failed");
+    }
   *out = transport;
   return 0;
 }
@@ -867,6 +948,7 @@ static int session_loop(voice_transport_t *transport, const char *session_id)
   uint64_t last_audio_ms = 0;
   unsigned vad_run = 0;
   bool was_talking = false;
+  int rx_errs = 0;
   int ret;
 
   set_state(is_talking() ? DOUBAO_VOICE_CONNECTING : DOUBAO_VOICE_IDLE, NULL);
@@ -938,13 +1020,28 @@ static int session_loop(voice_transport_t *transport, const char *session_id)
         }
       else if (!talking && was_talking)
         {
-          if (player) { voice_player_abort(player); player = NULL; }
-          if (capture) { voice_capture_close(capture); capture = NULL; }
-          turn_open = false;
-          chat_ended = false;
-          vad_run = 0;
-          discard_turn_audio = true;
-          set_state(DOUBAO_VOICE_IDLE, NULL);
+          /* PC 端测试确认:服务端在 event 350 后 ~1s 下发 TTSResponse(352)。
+           * 若此时因 talking 变 false 立即退出,音频帧将丢失。用 turn_open
+           * 判断是否还在对话轮次中(chat 文本已到达,服务端正生成 TTS)。 */
+          if (turn_open)
+            {
+              DOUBAO_LOG("talk ended but turn still open, waiting for TTS");
+              if (capture)
+                {
+                  voice_capture_close(capture);
+                  capture = NULL;
+                }
+            }
+          else
+            {
+              if (player) { voice_player_abort(player); player = NULL; }
+              if (capture) { voice_capture_close(capture); capture = NULL; }
+              turn_open = false;
+              chat_ended = false;
+              vad_run = 0;
+              discard_turn_audio = true;
+              set_state(DOUBAO_VOICE_IDLE, NULL);
+            }
         }
       was_talking = talking;
 
@@ -978,8 +1075,27 @@ static int session_loop(voice_transport_t *transport, const char *session_id)
             }
         }
 
-      /* (A) 采集一包(非阻塞,~20ms 节拍源) */
-      if (!capture)
+      /* (A) 采集一包(非阻塞,~20ms 节拍源)
+       *
+       * 关键:累积/播放 TTS 期间(player != NULL)一律不上传。收 TTS 音频
+       * 时若还在上行发送静音帧,单 curl 句柄 send/recv 争用会导致 ws send
+       * fail → RC_RECONNECT 重连 → TTS 流(含 352 音频与 359 结束)被截断,
+       * 表现为"播放不全"。此时麦克风本就被 gate,无需上传;只需专注排空
+       * 接收把整段 TTS 收齐。采集帧仍读出丢弃防止采集缓冲溢出。 */
+      bool playing = (player != NULL);
+      if (playing)
+        {
+          if (capture)
+            {
+              (void)voice_capture_read_packet(capture, audio, sizeof(audio));
+            }
+          else
+            {
+              usleep(DOUBAO_CAPTURE_PACKET_MS * 1000);
+            }
+          ret = -EAGAIN;   /* 不进入下方上传分支 */
+        }
+      else if (!capture)
         {
           if (send_audio(transport, session_id, silence, sizeof(silence)) < 0)
             {
@@ -994,21 +1110,11 @@ static int session_loop(voice_transport_t *transport, const char *session_id)
         }
       if (ret == (int)sizeof(audio))
         {
-          bool playing = (player != NULL);
-          if (talking && playing && DOUBAO_BARGE_IN_ENABLED &&
-              energy_vad(audio, sizeof(audio), &vad_run))
-            {
-              voice_player_abort(player);
-              player = NULL;
-              playing = false;
-              chat_ended = false;
-              vad_run = 0;
-              set_state(DOUBAO_VOICE_LISTENING, NULL);
-            }
-          /* 上传源:待命/播放中/播完静音门内 → 静音帧;对话中且门已过 → 真音频 */
+          /* 上传源:待命/播完静音门内 → 静音帧;对话中且门已过 → 真音频。
+           * (playing 分支已在上面 ret=-EAGAIN 跳过,这里 player==NULL) */
           bool post_tts_muted = playback_end_ms != 0 &&
               (now_ms() - playback_end_ms < DOUBAO_POST_TTS_MUTE_MS);
-          const uint8_t *up = (talking && !playing && !post_tts_muted)
+          const uint8_t *up = (talking && !post_tts_muted)
                               ? audio : silence;
           /* 诊断:统计真实音频上传帧数(每 50 帧≈1s 打一次)。 */
           if (up == audio)
@@ -1058,10 +1164,20 @@ static int session_loop(voice_transport_t *transport, const char *session_id)
             }
           if (ret < 0)
             {
+              /* 服务端在 chat 响应后可能短暂暂停(准备 TTS 音频),
+               * WS recv 可能返回临时错误。不要立即重连,继续轮询
+               * 接收,避免错过 TTSResponse(352)。*/
+              if (++rx_errs < 5)
+                {
+                  usleep(50000);
+                  continue;
+                }
+              DOUBAO_LOG("session_loop EXIT transport-error x%d", rx_errs);
               if (player) voice_player_close(player);
               voice_capture_close(capture);
               return RC_RECONNECT;
             }
+          rx_errs = 0;
           if (opcode != VOICE_WS_BINARY)
             {
               continue;
@@ -1070,11 +1186,9 @@ static int session_loop(voice_transport_t *transport, const char *session_id)
             {
               continue;
             }
-          if (packet.kind != DOUBAO_PACKET_AUDIO)
-            {
-              DOUBAO_LOG("rx event=%d kind=%d payload=%zu", packet.event,
-                         packet.kind, packet.payload_size);
-            }
+          /* 诊断: 打印所有包（含音频），定位 TTS 音频是否到达 */
+          DOUBAO_LOG("rx event=%d kind=%d payload=%zu",
+                     packet.event, packet.kind, packet.payload_size);
           handle_fd(&packet, transport, &player, &turn_open, &chat_ended,
                     &last_audio_ms, &discard_turn_audio, &tts_ended);
           if (packet.kind == DOUBAO_PACKET_ERROR)
@@ -1099,7 +1213,9 @@ static int session_loop(voice_transport_t *transport, const char *session_id)
                                  : DOUBAO_VOICE_IDLE, NULL);
         }
 
-      /* 文字 query 兜底:回复结束却无 TTS,复位 IDLE 否则 ask_text 永久被拒 */
+      /* 文字 query 兜底:回复结束却无 TTS,复位 IDLE。保持与 desktop-app
+       * 参考实现一致:不在此发送 ChatTTSText(500),因服务端在 ChatEnded(559)
+       * 后可能关闭 WebSocket,额外事件会触发 transport 断连。 */
       if (chat_ended && !player && !is_talking() &&
           now_ms() - last_audio_ms > DOUBAO_DRAIN_TIMEOUT_MS)
         {
@@ -1113,6 +1229,10 @@ static int session_loop(voice_transport_t *transport, const char *session_id)
 
   if (player) voice_player_close(player);
   if (capture) voice_capture_close(capture);
+  DOUBAO_LOG("session_loop EXIT talking=%d shutdown=%d turn_open=%d "
+             "chat_ended=%d player=%p",
+             is_talking(), is_shutdown(), turn_open, chat_ended,
+             (void *)player);
   return RC_STOP;
 }
 
