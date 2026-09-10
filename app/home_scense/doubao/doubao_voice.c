@@ -89,6 +89,8 @@ typedef struct doubao_voice_context_s
   bool stop_playback;    /* 用户暂停:立即中止 TTS,保留连接 */
   bool query_pending;    /* 有待发送的文字 query */
   char pending_query[DOUBAO_TEXT_MAX];
+  bool greet_pending;    /* 本次唤醒待发送的主动打招呼提示词 */
+  char greet_text[DOUBAO_TEXT_MAX];
   char dialog_id[DOUBAO_DIALOG_ID_MAX];
   doubao_voice_snapshot_t snapshot;
   doubao_voice_config_t config;
@@ -1037,6 +1039,39 @@ static int session_loop(voice_transport_t *transport, const char *session_id)
           set_state(DOUBAO_VOICE_LISTENING, NULL);
           DOUBAO_LOG("talk START: capture opened, LISTENING (was_talking=%d)",
                      (int)was_talking);
+
+          /* 主动打招呼:本次唤醒若排了 greeting 提示词,在此发一次文字 query,
+           * 豆包回文字+TTS 主动打招呼,随后继续全双工聆听用户。只发一次
+           * (greet_pending 取走即清),重连/重开采集不会重复打招呼。 */
+          {
+            char greet[DOUBAO_TEXT_MAX];
+            bool do_greet = false;
+            pthread_mutex_lock(&g_voice.mutex);
+            if (g_voice.greet_pending)
+              {
+                copy_text(greet, sizeof(greet), g_voice.greet_text);
+                g_voice.greet_pending = false;
+                do_greet = true;
+              }
+            pthread_mutex_unlock(&g_voice.mutex);
+            if (do_greet)
+              {
+                begin_turn_snapshot();
+                turn_open = true;
+                chat_ended = false;
+                tts_ended = false;
+                discard_turn_audio = false;
+                last_audio_ms = now_ms();
+                set_state(DOUBAO_VOICE_WAITING_RESPONSE, NULL);
+                DOUBAO_LOG("greeting query: %s", greet);
+                if (send_text_query(transport, session_id, greet) < 0)
+                  {
+                    voice_capture_close(capture);
+                    capture = NULL;
+                    return RC_RECONNECT;
+                  }
+              }
+          }
         }
       else if (!talking && capture)
         {
@@ -1425,6 +1460,29 @@ int doubao_voice_start(void)
   return 0;
 }
 
+int doubao_voice_start_greeting(const char *greeting)
+{
+  if (g_ir_learning)
+    {
+      return -EBUSY;
+    }
+  if (!g_voice.initialized || !doubao_voice_is_configured())
+    {
+      return -ENOKEY;
+    }
+  pthread_mutex_lock(&g_voice.mutex);
+  /* 排队打招呼提示词,由 session_loop 在 talk-START 时发一次(见 talk 边沿)。
+   * 空 greeting 则退化为普通 start。 */
+  if (greeting && greeting[0])
+    {
+      copy_text(g_voice.greet_text, sizeof(g_voice.greet_text), greeting);
+      g_voice.greet_pending = true;
+    }
+  g_voice.talking = true;
+  pthread_mutex_unlock(&g_voice.mutex);
+  return 0;
+}
+
 int doubao_voice_stop(void)
 {
   if (!g_voice.initialized)
@@ -1434,6 +1492,7 @@ int doubao_voice_stop(void)
   pthread_mutex_lock(&g_voice.mutex);
   g_voice.talking = false;
   g_voice.stop_playback = true;
+  g_voice.greet_pending = false;   /* 取消尚未发出的打招呼 */
   pthread_mutex_unlock(&g_voice.mutex);
   return 0;
 }

@@ -478,10 +478,14 @@ static void gate_conversation(int any_frontal)
 
   if (!face_opened && present_run >= PRESENT_FRAMES_TO_START)
     {
-      if (doubao_voice_start() == 0)
+      /* 正脸唤醒:开全双工的同时让豆包主动打招呼。greeting 提示词让模型
+       * 用简短热情的一句话开场,随后照常全双工聆听用户。 */
+      if (doubao_voice_start_greeting(
+            "现在有人正抬头看着你,请你主动、热情地用一句话跟他打个招呼,"
+            "简短自然即可,不要太长。") == 0)
         {
           face_opened = true;
-          syslog(LOG_INFO, "[face_detect] frontal face -> start conversation\n");
+          syslog(LOG_INFO, "[face_detect] frontal face -> start conversation (greet)\n");
         }
     }
   else if (face_opened && absent_run >= ABSENT_FRAMES_TO_STOP)

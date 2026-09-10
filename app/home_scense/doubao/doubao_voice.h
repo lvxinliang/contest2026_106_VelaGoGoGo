@@ -47,6 +47,11 @@ void doubao_voice_deinit(void);
 int doubao_voice_start(void);
 int doubao_voice_stop(void);
 
+/* 开启全双工连续会话,并在会话建立后自动发送一条 greeting 提示词让豆包
+ * 主动打招呼(如正脸唤醒:"有人正在看你,主动跟他打个招呼")。之后照常
+ * 全双工聆听用户。greeting 为空则等同 doubao_voice_start()。 */
+int doubao_voice_start_greeting(const char *greeting);
+
 /* 立即中止任何在播 TTS(全双工/文字问答)并回到待命,尽快释放播放设备。
  * 供音乐播放等抢占使用。 */
 int doubao_voice_abort_playback(void);
