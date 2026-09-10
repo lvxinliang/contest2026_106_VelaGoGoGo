@@ -255,6 +255,19 @@ static bool take_stop_playback(void)
   return r;
 }
 
+/* voice_player 播放中止查询回调:停止对话/人脸离开(doubao_voice_stop 置
+ * stop_playback)或音乐抢占(abort_playback)时返回真,让同步 vp_play 及时
+ * 打断。仅"窥探"标志不消费,消费仍由 session_loop 的 take_* 完成。 */
+static bool playback_should_abort(void *arg)
+{
+  bool r;
+  (void)arg;
+  pthread_mutex_lock(&g_voice.mutex);
+  r = g_voice.abort_playback || g_voice.stop_playback;
+  pthread_mutex_unlock(&g_voice.mutex);
+  return r;
+}
+
 static void begin_turn_snapshot(void)
 {
   pthread_mutex_lock(&g_voice.mutex);
@@ -682,6 +695,9 @@ static void handle_fd(const doubao_packet_t *packet,
                                 DOUBAO_TTS_RATE, DOUBAO_TTS_CHANNELS,
                                 DOUBAO_TTS_BITS) == 0)
             {
+              /* 让同步播放可被"停止对话/人脸离开/音乐抢占"及时打断,
+               * 避免长回复把会话线程冻结数秒导致状态机卡死。 */
+              voice_player_set_abort_cb(*player, playback_should_abort, NULL);
               set_state(DOUBAO_VOICE_PLAYING, NULL);
               DOUBAO_LOG("player opened (TTS start)");
             }
@@ -979,13 +995,17 @@ static int session_loop(voice_transport_t *transport, const char *session_id)
                                  : DOUBAO_VOICE_IDLE, NULL);
         }
 
-      /* 对话开始/停止边沿 */
-      if (talking && !was_talking)
+      /* 采集设备与 talking 电平对齐(不用纯边沿):talking 且未在放 TTS 且
+       * 采集未开 → 开麦。这样即使 face gone→back 在阻塞式 vp_play 期间被整体
+       * 跳过(边沿丢失),循环恢复后也能按电平自愈重开,避免"talking=true 但
+       * 采集未开、状态卡 IDLE、无法收音"的死状态。was_talking 仅用于判断是否
+       * 为真实上升沿(决定要不要等唤醒交接)。 */
+      if (talking && !player && !capture)
         {
 #ifdef CONFIG_LVX_USE_DEMO_CONTEST2026_106_WAKEUP
           /* 开麦前等唤醒线程释放麦克风(它每圈轮询 talking, 看到即停,
-           * 正常交接 ~200ms)。超时兜底: 唤醒线程卡死时放弃等待强开,
-           * 否则会话永远起不来。 */
+           * 正常交接 ~200ms)。超时兜底: 唤醒线程卡死时放弃等待强开。
+           * 唤醒未占麦时 wakeup_is_recording() 立即为假,近乎零开销。 */
           {
             uint64_t wait_start = now_ms();
             while (wakeup_is_recording() && !is_shutdown() &&
@@ -1015,26 +1035,24 @@ static int session_loop(voice_transport_t *transport, const char *session_id)
             }
           discard_turn_audio = false;
           set_state(DOUBAO_VOICE_LISTENING, NULL);
-          DOUBAO_LOG("talk START: capture opened, LISTENING");
+          DOUBAO_LOG("talk START: capture opened, LISTENING (was_talking=%d)",
+                     (int)was_talking);
         }
-      else if (!talking && was_talking)
+      else if (!talking && capture)
         {
-          /* PC 端测试确认:服务端在 event 350 后 ~1s 下发 TTSResponse(352)。
-           * 若此时因 talking 变 false 立即退出,音频帧将丢失。用 turn_open
-           * 判断是否还在对话轮次中(chat 文本已到达,服务端正生成 TTS)。 */
+          /* talking 落沿:服务端在 event 350 后 ~1s 才下发 TTSResponse(352),
+           * 若本轮仍开着(turn_open)则先只关采集、留连接等 TTS;否则整轮收尾。 */
           if (turn_open)
             {
               DOUBAO_LOG("talk ended but turn still open, waiting for TTS");
-              if (capture)
-                {
-                  voice_capture_close(capture);
-                  capture = NULL;
-                }
+              voice_capture_close(capture);
+              capture = NULL;
             }
           else
             {
               if (player) { voice_player_abort(player); player = NULL; }
-              if (capture) { voice_capture_close(capture); capture = NULL; }
+              voice_capture_close(capture);
+              capture = NULL;
               turn_open = false;
               chat_ended = false;
               vad_run = 0;

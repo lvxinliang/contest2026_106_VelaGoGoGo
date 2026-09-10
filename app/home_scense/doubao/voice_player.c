@@ -51,6 +51,8 @@ struct voice_player_s
   size_t    size;
   size_t    cap;
   volatile int aborted;
+  voice_player_abort_cb_t abort_cb;   /* 播放中止查询(每轮轮询) */
+  void     *abort_arg;
 };
 
 static uint64_t now_ms(void)
@@ -208,9 +210,13 @@ static int vp_play(voice_player_t *player)
     {
       unsigned prio;
 
-      /* abort:立即 STOP 收尾,丢弃剩余 */
-      if (player->aborted && !stopping)
+      /* abort:立即 STOP 收尾,丢弃剩余。aborted 显式置位,或回调(停止对话/
+       * 人脸离开/音乐抢占)返回真 → 及时打断,避免长回复把会话线程冻死。 */
+      if (!stopping &&
+          (player->aborted ||
+           (player->abort_cb && player->abort_cb(player->abort_arg))))
         {
+          player->aborted = 1;
           ioctl(fd, AUDIOIOC_STOP, 0);
           stopping = true;
           streaming = false;
@@ -371,6 +377,16 @@ int voice_player_open(voice_player_t **out, const char *device,
           device, (unsigned long)sample_rate, channels, bits_per_sample);
   *out = player;
   return 0;
+}
+
+void voice_player_set_abort_cb(voice_player_t *player,
+                               voice_player_abort_cb_t cb, void *arg)
+{
+  if (player)
+    {
+      player->abort_cb  = cb;
+      player->abort_arg = arg;
+    }
 }
 
 int voice_player_write(voice_player_t *player, const uint8_t *data,
