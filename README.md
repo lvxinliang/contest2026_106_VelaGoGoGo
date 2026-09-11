@@ -1,176 +1,181 @@
-# contest2026_106_VelaGoGoGo
+# VelaGoGoGo — AI 全屋智能语音助手
 
-👋 欢迎参加 **2026 首届 openvela AI 硬件开发者大赛**！
+## 一、作品简介
 
-这是组委会为你的队伍创建的**专属参赛仓库**（本仓为样例/模板，队伍编号 `106`；你看到的将是你自己的 `contest2026_<编号>_<队伍名>`）。比赛期间，你的全部参赛代码、打包产物与 AI Coding 日志都提交到这里。
+VelaGoGoGo 是一款运行在 OpenVela（R528/Gemini-S1 开发板）上的 **AI 全屋智能语音助手**。它将豆包端到端实时语音对话、免提唤醒词检测、Claude Code 实时状态联动、人脸识别自动触发、环境传感器、LED 灯控、红外空调遥控等功能集成在一块 320×240 彩色触屏上，实现了从"唤醒 → 语音交互 → 智能控制 → 状态反馈"的完整闭环。
 
-> 本仓既是「代码仓」，又内置了一键拉取整套 openvela 工程的 `repo` 清单（manifest）。你只需跟它打交道，**自始至终只动一个文件夹**。
+**核心亮点：**
 
----
+- **豆包实时语音对话**：基于豆包 RealtimeAPI 的 WebSocket 全双工语音链路，按键说话（PTT）或免提唤醒后即说即答，支持 TTS 播放和文本展示。
+- **免提唤醒词**：纯 C 实现的 CNN 唤醒词检测（关键词"你好，OpenVela"），后台常驻流式检测，唤醒后自动开启豆包对话，无需触屏操作。
+- **Claude Code 状态联动**：通过 MQTT 桥接，电脑端 Claude Code 的工作状态（思考中 / 执行中 / 空闲）实时同步到开发板表情显示，打造硬件+AI 编程伴侣。
+- **人脸识别自动触发**：基于 BlazeFace + TFLite Micro 的 UVC 摄像头人脸识别，检测到人脸自动开启语音对话，离开后自动关闭。
+- **智能家居控制**：温湿度/近距离传感器数据实时显示、WS2812 RGB LED 亮度控制、红外空调遥控。
+- **表情动画系统**：设备空闲时显示情绪数字表情轮播，语音交互时切换为聆听/说话/思考等动画状态。
 
-## 一、先读这些官方文档
+## 二、选题方向
 
-**通用（所有赛道必读）：**
+**AI 硬件产品创新**
 
-| 文档                                                                                                                                     | 用途                                           |
-| ---------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------- |
-| [《大赛总览》](https://github.com/open-vela/docs/blob/dev-ai-contest-2026/zh-cn/contest_2026/contest_overview.md)                        | 赛道、流程、评分、资源，建议先通读             |
-| [《参赛代码提交指南》](https://github.com/open-vela/docs/blob/dev-ai-contest-2026/zh-cn/contest_2026/code_submission_guide.md)           | 仓库获取、提交流程、时间与权限（**以此为准**） |
-| [《AI Coding 日志归集与提交手册》](https://github.com/open-vela/docs/blob/dev-ai-contest-2026/zh-cn/contest_2026/ai_coding_log_guide.md) | 如何导出 AI 对话日志并提交到 `logs/`           |
+基于 OpenVela RTOS 和 R528/Gemini-S1 开发板，集成豆包大模型实时语音、CNN 唤醒词、人脸识别、MQTT IoT 联动等多项 AI 能力，打造了一款可交互、可感知、可联动的全屋智能语音助手原型。
 
-**按你的赛道选读（三选一）：**
+## 三、目录结构
 
-| 赛道                  | 教程导航                                                                                                                                                 |
-| --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 快应用 / 手表应用创新 | [快应用教程导航](https://github.com/open-vela/docs/blob/dev-ai-contest-2026/zh-cn/contest_2026/quickapp/quickapp_guide_index.md)                         |
-| AI 硬件产品创新       | [AI 硬件赛道教程导航](https://github.com/open-vela/docs/blob/dev-ai-contest-2026/zh-cn/contest_2026/ai_hardware/ai_hardware_guide_index.md)              |
-| 新硬件适配            | [新硬件适配赛道教程导航](https://github.com/open-vela/docs/blob/dev-ai-contest-2026/zh-cn/contest_2026/hardware_porting/hardware_porting_guide_index.md) |
+```text
+app/home_scense/              — 主应用（LVGL 智能家居 UI + 全部功能模块）
+  ├── main.c / main.h         — 程序入口、全局变量、libuv 事件循环
+  ├── ui_main.c               — 主屏 UI（时钟、日期、天气、传感器）
+  ├── ui_voice.c / ui_voice.h — 语音交互面板（录音/识别/回答/播放）
+  ├── ui_light.c              — LED 灯控面板（开关 + 亮度滑条）
+  ├── ui_settings.c           — 设置面板
+  ├── ui_about.c              — 关于页面
+  ├── ui_status_bar.c/h       — 顶部状态栏（WiFi/电量/时间）
+  ├── ui_emoji_idle.c         — 空闲表情动画轮播
+  ├── home_scense_emoji_ipc.c — 表情 IPC 通信
+  ├── claude_mqtt.c           — Claude Code MQTT 状态桥接客户端
+  ├── claude_mqtt.h           — MQTT 状态桥接接口
+  ├── wifi_status.c/h         — WiFi 状态监控
+  ├── sensor.c / sensor.h     — 温湿度/近距离传感器读取
+  ├── led_control.c/h         — LED 适配层（WS2812 + PWM）
+  ├── ac_ir_control.c         — 红外空调遥控
+  ├── face_detect.cc/h        — 人脸识别（BlazeFace + TFLite Micro）
+  ├── doubao/                 — 豆包实时语音模块
+  │   ├── doubao_voice.c/h    — 会话协调层
+  │   ├── doubao_protocol.c/h — 豆包二进制协议封包/解析
+  │   ├── voice_transport.c/h — TLS WebSocket 连接与帧收发
+  │   ├── voice_capture.c/h   — PCM 麦克风采集（16kHz/mono）
+  │   ├── voice_player.c/h    — TTS PCM 播放（24kHz）
+  │   ├── wake_reply.c/h      — 唤醒应答音播放
+  │   ├── wake_reply_assets.S — 应答音二进制嵌入
+  │   ├── doubao_secret.h.example — 凭证模板（本地填写，不提交 Git）
+  │   ├── doubao_config.h     — 模型/音色/协议常量
+  │   ├── certs/              — TLS CA 证书
+  │   └── README.md           — 豆包模块详细文档
+  ├── wakeup/                 — 免提唤醒词模块
+  │   ├── wakeup.c/h          — 后台线程：麦克风仲裁 + CNN 推理 + 触发豆包
+  │   ├── mel_features.c/h    — log-mel 特征提取前端
+  │   ├── mic_capture.c/h     — NuttX audio 流式采集
+  │   ├── wav_player.c/h      — 唤醒应答音播放
+  │   ├── wake_model_weights.h — CNN 模型权重
+  │   ├── wakeup_wozai.wav    — 唤醒应答语音
+  │   └── README.md           — 唤醒模块详细文档
+  ├── res/                    — UI 资源（表情 webp 图片）
+  ├── emoji_blob.S            — 表情资源二进制嵌入
+  ├── Kconfig                 — 构建开关定义
+  ├── CMakeLists.txt          — CMake 构建脚本
+  └── Make.dep                — 依赖声明
 
----
+board/contest_board/          — 板级适配
+  ├── configs/nsh/            — board config（defconfig）
+  ├── overlay/                — 构建时覆盖到 openvela 公共树的文件
+  ├── src/                    — 板级初始化代码
+  └── Kconfig / CMakeLists.txt
 
-## 二、第一步：拉取完整工程
+configs/                      — 构建配置
+  ├── defconfig               — 完整 defconfig
+  ├── rcS.nsh                 — 启动脚本
+  └── sys_partition.fex       — 分区表
 
-用组委会提供的命令一键拉取「openvela 全量源码 + 你的专属仓」：
+claude-mqtt-bridge/           — Claude Code MQTT 状态桥接
+  ├── skill/                  — 电脑端 Claude Code Skill（hook 脚本）
+  │   ├── SKILL.md            — Skill 说明文档
+  │   ├── scripts/            — Python 脚本（hook.py / publish_status.py / dependency.py）
+  │   └── settings.example.json
+  └── README.md               — MQTT 桥接完整文档
+
+scripts/                      — 辅助脚本
+  └── wifi.sh                 — WiFi 连接/状态管理脚本
+
+tools/                        — 开发工具
+  ├── wav_to_raw.py           — WAV → raw PCM 转换
+  ├── webp_to_blob.py         — WebP → 二进制嵌入
+  └── claude_webp_to_blob.py  — Claude 状态专用 WebP 转换
+
+build.sh                      — 一键构建/烧录脚本
+logs/                         — AI Coding 日志
+```
+
+## 四、运行方式
+
+### 4.1 环境准备
 
 ```bash
+# 1. 拉取完整工程
 repo init -u https://github.com/open-vela/contest2026_106_VelaGoGoGo \
   -b dev-ai-contest-2026 -m contest2026_106_VelaGoGoGo.xml
 repo sync -c -j8
-```
 
-同步后，你的整个仓库位于工作区的 `contest2026_106_VelaGoGoGo/`，openvela 全量源码在外层（`nuttx/`、`apps/`、`packages/`、`vendor/` 等）。
-
----
-
-## 三、第二步：在哪里写代码
-
-**只在自己的仓目录 `contest2026_106_VelaGoGoGo/` 里开发。** 不同作品形态放在对应子目录，manifest 会通过 `<linkfile>` 把它们**软链**到 openvela 编译树该在的位置——你不用手动 copy：
-
-| 作品形态 | 你的代码放这里             | 系统自动映射到                                 |
-| -------- | -------------------------- | ---------------------------------------------- |
-| 应用     | `app/hello_app/`           | `packages/demos/contest2026_106_hello_app`     |
-| 快应用   | `quickapp/hello_quickapp/` | `packages/apps/contest2026_106_hello_quickapp` |
-| 板级适配 | `board/contest_board/`     | `vendor/openvela/boards/contest2026_106_board` |
-
-> 用不到的形态目录可以删掉；新增作品时按同样规则加子目录，并在 `contest2026_106_VelaGoGoGo.xml` 里补一条 `<linkfile>` 映射即可。**生产仓库（packages/nuttx/vendor 等）零改动。**
-
-建议仓库目录约定（便于评委定位）：
-
-```text
-app/ | quickapp/ | board/   # 你的作品代码
-logs/                       # AI Coding 日志（主动导出后提交，格式见 logs/README.md）
-README.md                   # 作品说明（提交前请改成你自己的，见第六节）
-```
-
-> 仓内附带了一个 `.gitignore.example`，给出了**编译产物**等不需要进仓的文件示例。如需启用，`cp .gitignore.example .gitignore` 后按需增删即可。**注意 `logs/` 下最终导出的 AI Coding 日志必须提交，不要忽略。**
->
-> `logs/` 的目录结构与提交格式见 [logs/README.md](logs/README.md)。
-
----
-
-## 豆包实时语音（比赛 MVP）
-
-`app/home_scense/` 已预留豆包端到端实时语音对话模块：点击 AI 入口开始录音，再次点击结束；设备使用 `/dev/audio/pcm0c` 以 16 kHz PCM 上传语音，并显示识别/回答文本、播放服务返回的 TTS PCM。
-
-### 本地凭证（不要提交 Git）
-
-完整构建前，在本机创建私密头文件：
-
-```bash
+# 2. 配置豆包凭证（本地文件，不提交 Git）
 cp app/home_scense/doubao/doubao_secret.h.example \
   app/home_scense/doubao/doubao_secret.h
-```
+# 编辑 doubao_secret.h，填入火山引擎控制台的 APP ID、Access Token、模型、音色
 
-填写火山引擎控制台取得的 APP ID、Access Token，以及实际开通的模型和音色。真实文件已被 `.gitignore` 忽略；它会编译进测试固件，但不会进入 Git 历史或 AI Coding 日志。
-
-### 真机准备
-
-```bash
+# 3. 连接 WiFi
 ./scripts/wifi.sh connect "<SSID>" "<PASSWORD>"
-adb shell "date"
-adb shell "ls -l /dev/audio/pcm*"
-adb shell "ping -c 1 openspeech.bytedance.com"
 ```
 
-TLS 依赖正确的设备时间、网络/DNS 及系统 CA 证书；预期音频节点为 `/dev/audio/pcm0c` 和 `/dev/audio/pcm0p`。更详细的模块边界与调试步骤见 [`app/home_scense/doubao/README.md`](app/home_scense/doubao/README.md)。
-
----
-
-## 四、第三步：编译与运行
-
-编译/运行步骤随作品形态不同而不同，请参考你所在赛道的教程导航：
-
-- 快应用 / 手表应用：[快应用教程导航](https://github.com/open-vela/docs/blob/dev-ai-contest-2026/zh-cn/contest_2026/quickapp/quickapp_guide_index.md)（含模拟器与开发板部署）。
-- AI 硬件产品创新：[AI 硬件赛道教程导航](https://github.com/open-vela/docs/blob/dev-ai-contest-2026/zh-cn/contest_2026/ai_hardware/ai_hardware_guide_index.md)（环境搭建、编译烧录、Skill 开发）。
-- 新硬件适配：[新硬件适配赛道教程导航](https://github.com/open-vela/docs/blob/dev-ai-contest-2026/zh-cn/contest_2026/hardware_porting/hardware_porting_guide_index.md)（BSP 移植、最小 NSH 基线）。
-
-子目录已通过 manifest 中的 `<linkfile>` 软链进 openvela 编译树，因此构建在 openvela 工作区**根目录**（即你这个仓的上一级）进行。openvela 使用 `build.sh` 作为统一入口，接收一个 **board config 路径**作为参数：
+### 4.2 编译
 
 ```bash
-# 进入 openvela 工作区根目录（你的仓的上一级）
+# 进入 openvela 工作区根目录（仓的上一级）
 cd ..
 
-# 通用语法：第一个参数是 board config 路径，第二个参数可以是 menuconfig / distclean 等
-./build.sh <board-config-path> [menuconfig|distclean] [-j8]
+# 首次编译（完整构建）
+./contest2026_106_VelaGoGoGo/build.sh full
+
+# 日常开发增量编译（~10s）
+./contest2026_106_VelaGoGoGo/build.sh
 ```
 
-> 具体的 board config 路径、目标产物、模拟器/真机部署方式请以你所在赛道的教程导航为准。本仓 `app/` `quickapp/` `board/` 三个示例骨架对应的 Kconfig 选项可通过 `menuconfig` 启用。
+### 4.3 烧录与运行
 
----
+```bash
+# 增量编译 + 烧录到设备
+./contest2026_106_VelaGoGoGo/build.sh flash
 
-## 五、第四步：提交作品
+# 完整编译 + 烧录
+./contest2026_106_VelaGoGoGo/build.sh full-flash
+```
 
-1. **fork** 你的专属仓 → 开发 → `git commit` 并推送 → 向专属仓发起 **Pull Request**，可**自行 review 并合入**（无需等组委会）。
-2. **AI Coding 日志**：与 AI 工具的对话会自动记录到本机 staging（不会自动上传），需你**主动导出/打包**选定会话到仓内 `logs/` 目录后一并提交。详见[《AI Coding 日志归集与提交手册》](https://github.com/open-vela/docs/blob/dev-ai-contest-2026/zh-cn/contest_2026/ai_coding_log_guide.md)。
-3. 若需改动 **nuttx 等公共仓库**，不在本仓改，而是 fork 对应公共仓、以 PR 提交到 `dev-ai-contest-2026` 分支，由组委会 review 后合入。
+烧录完成后设备自动重启，`home_scense` 应用随系统自动启动（见 `configs/rcS.nsh`）。
 
-> ⏰ **提交作品截止：9 月 20 日**。截止后统一收回 push 权限，仍可查看 / clone。
->
-> 获奖后再按要求将作品 PR 至 openvela 上游对应仓库（走标准 PR + CI 流程）。
+### 4.4 真机前置检查
 
-### 关于 PR 与 CLA
+```bash
+adb shell "date"                      # 确认时间正确（TLS 依赖）
+adb shell "ls -l /dev/audio/pcm*"     # 音频节点存在
+adb shell "ping -c 1 openspeech.bytedance.com"  # 网络/DNS 正常
+```
 
-- 本仓所有改动通过 **Pull Request** 合入（分支保护强制，可自行合入自己的 PR）。
-- 首次贡献需在[**官网签署 CLA**](https://openvela.com/#/community/cla)；PR 上会自动跑 `cla/signature` 检查，在官网签署成功后，在 PR 评论 `/check-cla` 复检即可通过。
+### 4.5 功能使用
 
----
-
-## 六、提交前：把本 README 改成你的作品说明
-
-本文件目前是组委会给的**使用说明书**。**作品提交前，请把它替换成你自己作品的说明**，方便评委快速了解你做了什么、怎么跑起来。建议至少包含以下内容：
-
-```markdown
-# <你的作品名>
-
-## 一、作品简介
-<一句话/一段话说明这个作品是什么、解决什么问题、亮点在哪>
-
-## 二、选题方向
-<快应用 / 手表应用创新 ｜ AI 硬件产品创新 ｜ 新硬件适配 ｜ 自定方向，并简述理由>
-
-## 三、目录结构
-<列出你这个仓里各目录/文件的作用，例如：>
-- `app/xxx/`        — <说明>
-- `board/xxx/`      — <说明>
-- `quickapp/xxx/`   — <说明>
-- `logs/`           — AI Coding 日志
-- `docs/` 或其他    — <说明>
-
-## 四、运行方式
-<拉取工程后，如何编译、烧录/部署、运行的完整步骤；最好能让评委照着一步步复现>
+| 功能 | 操作方式 |
+|------|---------|
+| 豆包语音对话 | 触屏点击 AI 入口 → 开始录音 → 再次点击结束 → 等待回答播放 |
+| 免提唤醒 | 说出唤醒词"你好，OpenVela" → 自动开始对话（无需触屏） |
+| Claude Code 状态联动 | 电脑端安装 `claude-mqtt-bridge/skill/`，开发板自动显示 AI 工作状态 |
+| LED 灯控 | 触屏进入灯光面板，开关 + 亮度滑条 |
+| 环境数据 | 主屏实时显示温度、湿度、近距离传感器数据 |
+| 人脸识别 | UVC 摄像头检测到人脸自动开启语音对话 |
 
 ## 五、AI Coding 使用说明
-<说明本作品如何借助 AI 辅助开发：
-- 在需求拆解 / 方案设计 / 编码 / 调试 / 文档等环节如何与 AI 协作；
-- AI 对开发效率或质量带来的实际帮助。
-完整对话日志见 logs/ 目录>
-```
 
-> 提示：将会根据「作品本身 + 你的 README 说明 + `logs/` 里的 AI Coding 日志」来理解和评估你的作品，README 写清楚很重要。
+### 开发工具链
 
----
+本项目全程使用 **Claude Code** 作为 AI 辅助开发工具，覆盖了从架构设计到调试优化的完整开发周期。
 
-## 附：仓库命名规范
+### AI 协作方式
 
-`contest2026_<编号>_<队伍名>` — 编号三位零填充；队名 slug（全小写、英文/拼音、连字符）。例：`contest2026_106_VelaGoGoGo`。
-（仓库由组委会统一创建，**每队仅一个仓**，无需自行命名。）
+- **架构设计**：使用 Claude Code 进行模块拆分设计，将 luncher_mini 单体应用重构为 sensor/LED/UI/voice/mqtt 等独立模块，确定了 Kconfig 条件编译策略和 CMake 构建组织。
+- **编码实现**：通过 Claude Code 实现了豆包 RealtimeAPI 的二进制协议解析、WebSocket TLS 传输、PCM 录音/播放等底层模块；MQTT 桥接服务的设备端脚本和电脑端 Python Skill 全部由 AI 生成。
+- **调试排错**：利用 Claude Code 分析串口日志、网络抓包、音频格式问题，定位并修复了 TTS 播放无声（recv_exact ms=0 偏移错误）、语音中断（上传期间暂停播放）等关键 bug。
+- **文档与工具**：各子模块 README、Kconfig 注释、build.sh 脚本、WiFi 工具脚本、资源转换工具等均由 AI 辅助编写。
+- **跨平台适配**：Claude Code MQTT 桥接的电脑端 Skill 实现了 Linux/macOS/Windows 三平台兼容，hook 脚本和依赖检查均由 AI 一次性生成并测试通过。
+
+### AI 带来的效率提升
+
+- **协议开发**：豆包二进制协议的封包/解析代码，AI 根据协议文档直接生成，减少约 80% 的手动编码时间。
+- **嵌入式调试**：AI 辅助分析 NuttX 系统调用、音频驱动行为、网络栈配置，大幅缩短了嵌入式环境下的调试周期。
+- **全栈覆盖**：从 C 嵌入式固件到 Python 桌面 Skill，AI 在不同语言和技术栈间无缝切换，一人完成了硬件+固件+桌面工具的全栈开发。
+
+> 完整对话日志见 `logs/` 目录。
